@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import sqlite3
 from dotenv import load_dotenv
@@ -9,6 +9,10 @@ import typesense
 
 app = Flask(__name__)
 CORS(app)
+
+landing_page = os.getenv("LANDING_PAGE")
+if landing_page:
+    app.template_folder = os.path.dirname(os.path.abspath(landing_page))
 
 def dict_factory(cursor, row):
     d = {}
@@ -252,6 +256,12 @@ def get_author(ol_id):
 
 @app.route("/")
 def index():
+    if landing_page:
+        template_file = os.path.basename(landing_page)
+        try:
+            return render_template(template_file)
+        except Exception as e:
+            print(f"Failed to render landing page: {e}")
     return {
         "name": "openlibrary-local-db-api",
         "version": "1.0.0",
