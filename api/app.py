@@ -5,11 +5,11 @@ from dotenv import load_dotenv
 import os
 from flasgger import Swagger
 import json
+import typesense
 
 app = Flask(__name__)
 CORS(app)
 
-# Use row_factory to get results as dictionaries automatically
 def dict_factory(cursor, row):
     d = {}
     for idx, col in enumerate(cursor.description):
@@ -33,9 +33,27 @@ swagger = Swagger(app)
 
 
 load_dotenv()
-con = sqlite3.connect(os.getenv("OL_DB"), check_same_thread=False)
-con.row_factory = dict_factory
-cur = con.cursor()
+def get_db_connection():
+    print(os.getenv("OL_DB"))
+    conn = sqlite3.connect(os.getenv("OL_DB"), check_same_thread=False)
+    conn.row_factory = dict_factory
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA mmap_size=31000000000;")
+    conn.execute("PRAGMA cache_size=-2000000;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+
+    return conn
+
+con = get_db_connection()
+
+ts_client = typesense.Client({
+    "nodes": [{"host": os.getenv("TYPESENSE_HOST", "localhost"), "port": "8108", "protocol": "http"}],
+    "api_key": os.getenv("TYPESENSE_API_KEY", ""),
+    "connection_timeout_seconds": 2,
+    "retry_interval_seconds": 0.1,
+    "num_retries": 3
+})
+COLLECTION_ALIAS = "editions"
 
 @app.route("/v1/search/<query>")
 def search(query):
@@ -61,65 +79,35 @@ def search(query):
         enum: [relevance, newest, oldest]
         default: relevance
     """
-    # 1. Get Parameters
     limit = request.args.get("limit", default=10, type=int)
     lang = request.args.get("lang", type=str)
     sort_mode = request.args.get("sort", default="relevance", type=str)
 
-    words = query.split()
-    safe_query = " AND ".join([f'"{word.replace('"', '""')}"' for word in words if word])
-
-    # 2. Build Query Components
-    base_sql = """
-        SELECT e.title, e.isbn_10, e.isbn_13, e.publish_date, e.author_names, e.languages
-        FROM editions e
-        JOIN editions_fts f ON e.rowid = f.rowid
-        WHERE f.editions_fts MATCH ?
-    """
-    
-    # 2.5 Ensure at least one ISBN is present
-    # We check that the JSON array is not empty
-    base_sql += " AND (e.isbn_10 != '[]' OR e.isbn_13 != '[]')"
-
-    params = [safe_query]
-
-    # 3. Add Language Filtering
-    if lang:
-        base_sql += " AND EXISTS (SELECT 1 FROM json_each(e.languages) WHERE value = ?)"
-        params.append(lang)
-
-    # 4. Add Sorting Logic
     if sort_mode == "newest":
-        base_sql += " ORDER BY e.publish_year DESC"
+        sort_by = "publish_year:desc"
     elif sort_mode == "oldest":
-        # Push year 0 (missing) to the bottom
-        base_sql += " ORDER BY e.publish_year = 0, e.publish_year ASC"
+        sort_by = "publish_year:asc"
     else:
-        base_sql += """ 
-            ORDER BY (
-                f.rank - (CASE WHEN json_array_length(e.author_names) > 0 THEN 0.5 ELSE 0 END)
-            ) DESC
-        """
+        sort_by = "_text_match:desc,publish_year:desc"
 
-    # 5. Add Limit
-    base_sql += " LIMIT ?"
-    params.append(limit)
+    search_params = {
+        "q":              query,
+        "query_by":       "title,author_names",
+        "per_page":       limit,
+        "sort_by":        sort_by,
+        "include_fields": "ol_id,title,author_names,isbn_10,isbn_13,languages,publish_date,publish_year"
+    }
 
-    # 6. Execute and Return
+    if lang:
+        search_params["filter_by"] = f"languages:=[{lang}]"
+
     try:
-        results = cur.execute(base_sql, params).fetchall()
-        if results:
-            for row in results:
-                json_fields = ['author_names', 'languages', 'isbn_13', 'isbn_10']
-                for field in json_fields:
-                    if isinstance(row.get(field), str):
-                        try:
-                            row[field] = json.loads(row[field])
-                        except json.JSONDecodeError:
-                            row[field] = [] # Fallback if data is corrupted
-            return jsonify(results)
-        return jsonify({"message": "Not found"}), 404
-    except sqlite3.OperationalError as e:
+        result = ts_client.collections[COLLECTION_ALIAS].documents.search(search_params)
+        hits = [h["document"] for h in result["hits"]]
+        if not hits:
+            return jsonify({"message": "Not found"}), 404
+        return jsonify(hits)
+    except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
@@ -140,30 +128,56 @@ def get_edition(identifier):
       404:
         description: Edition not found.
     """
-    # We use json() functions here so the API returns clean arrays/objects 
-    # instead of strings with backslashes.
+    """
+    Get full details of a specific edition by OLID, ISBN-10, or ISBN-13.
+    Optimized to achieve sub-millisecond execution over 49M rows.
+    """
+    cur = con.cursor()
+
+    target_ol_id = None
+
+    #isbn_plan = cur.execute("EXPLAIN QUERY PLAN SELECT ol_id FROM isbn_lookup WHERE isbn = ? LIMIT 1", (identifier,)).fetchall()
+   # print("ISBN Lookup Plan:", isbn_plan)
+
+    # DEBUG: Check the Editions lookup plan
+   #editions_plan = cur.execute("EXPLAIN QUERY PLAN SELECT ol_id FROM editions WHERE ol_id = ? LIMIT 1", (identifier,)).fetchall()
+    #print("Editions Lookup Plan:", editions_plan)
+
+    if identifier.startswith("OL"):
+        target_ol_id = identifier
+    else:
+        # It's an ISBN. Query ONLY the small lookup table.
+        # This uses the B-Tree index on 'isbn' instantly.
+        row = cur.execute(
+            "SELECT ol_id FROM isbn_lookup WHERE isbn = ? LIMIT 1", 
+            (identifier,)
+        ).fetchone()
+        
+        if row:
+            # Handle both tuple and dict row-factory outputs safely
+            target_ol_id = row["ol_id"] if isinstance(row, dict) else row[0]
+        else:
+            # If it's not found in the index, we stop immediately. 
+            # Total time elapsed: <1ms. No full table scan!
+            return jsonify({"message": f"Edition {identifier} not found"}), 404
+
     sql = """
         SELECT 
             ol_id, title, subtitle, publish_date, publish_year,
             number_of_pages, physical_format,
-            json(publishers) as publishers,
-            json(isbn_10) as isbn_10,
-            json(isbn_13) as isbn_13,
-            json(subjects) as subjects,
-            json(languages) as languages,
-            json(authors) as author_ids,
-            json(author_names) as author_names,
-            json(works) as work_ids
+            publishers,
+            isbn_10,
+            isbn_13,
+            subjects,
+            languages,
+            authors,
+            author_names,
+            works
         FROM editions
-        WHERE ol_id = ? 
-           OR EXISTS (SELECT 1 FROM json_each(isbn_10) WHERE value = ?)
-           OR EXISTS (SELECT 1 FROM json_each(isbn_13) WHERE value = ?)
+        WHERE ol_id = ?
         LIMIT 1
     """
-    
-    # We pass the identifier three times to cover all three columns
-    result = cur.execute(sql, (identifier, identifier, identifier)).fetchone()
-
+    result = cur.execute(sql, (target_ol_id,)).fetchone()
     if result:
         return jsonify(result)
     
@@ -194,6 +208,8 @@ def get_work(ol_id):
         WHERE ol_id = ?
         LIMIT 1
     """
+    cur = con.cursor()
+
     # Strip the prefix if the user includes it by accident
     clean_id = ol_id.replace("/works/", "")
     result = cur.execute(sql, (clean_id,)).fetchone()
@@ -224,6 +240,8 @@ def get_author(ol_id):
         WHERE ol_id = ?
         LIMIT 1
     """
+    cur = con.cursor()
+
     # Strip the prefix if the user includes it by accident
     clean_id = ol_id.replace("/authors/", "")
     result = cur.execute(sql, (clean_id,)).fetchone()

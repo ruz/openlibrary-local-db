@@ -1,4 +1,13 @@
 services:
+  typesense:
+    image: typesense/typesense:27.0
+    restart: always
+    ports:
+      - "8108:8108"
+    volumes:
+      - typesense_data:/data
+    command: "--data-dir /data --api-key=${TYPESENSE_API_KEY} --enable-cors"
+
   api:
     build: .
     image: openlibrary-local-search-api
@@ -6,7 +15,20 @@ services:
         - .env
     environment:
       - OL_DB=/app/oldata.db
+      - TYPESENSE_HOST=typesense
+      - TYPESENSE_API_KEY=${TYPESENSE_API_KEY}
+    depends_on:
+      - typesense
     volumes:
         - ${OL_DB}:/app/oldata.db:ro
     ports:
         - 5000:5000
+
+  typesense-dashboard:
+    image: ghcr.io/bfritscher/typesense-dashboard:latest
+    ports:
+      - "8109:80"
+    restart: unless-stopped
+
+volumes:
+  typesense_data:
