@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 import os
 from flasgger import Swagger
 import json
-import typesense
 
 app = Flask(__name__)
 CORS(app)
@@ -50,15 +49,6 @@ def get_db_connection():
 
 con = get_db_connection()
 
-ts_client = typesense.Client({
-    "nodes": [{"host": os.getenv("TYPESENSE_HOST", "localhost"), "port": "8108", "protocol": "http"}],
-    "api_key": os.getenv("TYPESENSE_API_KEY", ""),
-    "connection_timeout_seconds": 2,
-    "retry_interval_seconds": 0.1,
-    "num_retries": 3
-})
-COLLECTION_ALIAS = "editions"
-
 @app.route("/v1/search/<query>")
 def search(query):
     """
@@ -83,35 +73,66 @@ def search(query):
         enum: [relevance, newest, oldest]
         default: relevance
     """
+    # 1. Get Parameters
     limit = request.args.get("limit", default=10, type=int)
     lang = request.args.get("lang", type=str)
     sort_mode = request.args.get("sort", default="relevance", type=str)
 
-    if sort_mode == "newest":
-        sort_by = "publish_year:desc"
-    elif sort_mode == "oldest":
-        sort_by = "publish_year:asc"
-    else:
-        sort_by = "_text_match:desc,publish_year:desc"
+    words = query.split()
+    safe_query = " AND ".join([f'"{word.replace('"', '""')}"' for word in words if word])
 
-    search_params = {
-        "q":              query,
-        "query_by":       "title,author_names",
-        "per_page":       limit,
-        "sort_by":        sort_by,
-        "include_fields": "ol_id,title,author_names,isbn_10,isbn_13,languages,publish_date,publish_year"
-    }
+    # 2. Build Query Components
+    base_sql = """
+        SELECT e.title, e.isbn_10, e.isbn_13, e.publish_date, e.author_names, e.languages
+        FROM editions e
+        JOIN editions_fts f ON e.rowid = f.rowid
+        WHERE f.editions_fts MATCH ?
+    """
 
+    # 2.5 Ensure at least one ISBN is present
+    # We check that the JSON array is not empty
+    base_sql += " AND (e.isbn_10 != '[]' OR e.isbn_13 != '[]')"
+
+    params = [safe_query]
+
+    # 3. Add Language Filtering
     if lang:
-        search_params["filter_by"] = f"languages:=[{lang}]"
+        base_sql += " AND EXISTS (SELECT 1 FROM json_each(e.languages) WHERE value = ?)"
+        params.append(lang)
 
+    # 4. Add Sorting Logic
+    if sort_mode == "newest":
+        base_sql += " ORDER BY e.publish_year DESC"
+    elif sort_mode == "oldest":
+        # Push year 0 (missing) to the bottom
+        base_sql += " ORDER BY e.publish_year = 0, e.publish_year ASC"
+    else:
+        base_sql += """
+            ORDER BY (
+                f.rank - (CASE WHEN json_array_length(e.author_names) > 0 THEN 0.5 ELSE 0 END)
+            ) DESC
+        """
+
+    # 5. Add Limit
+    base_sql += " LIMIT ?"
+    params.append(limit)
+
+    # 6. Execute and Return
+    cur = con.cursor()
     try:
-        result = ts_client.collections[COLLECTION_ALIAS].documents.search(search_params)
-        hits = [h["document"] for h in result["hits"]]
-        if not hits:
-            return jsonify({"message": "Not found"}), 404
-        return jsonify(hits)
-    except Exception as e:
+        results = cur.execute(base_sql, params).fetchall()
+        if results:
+            for row in results:
+                json_fields = ['author_names', 'languages', 'isbn_13', 'isbn_10']
+                for field in json_fields:
+                    if isinstance(row.get(field), str):
+                        try:
+                            row[field] = json.loads(row[field])
+                        except json.JSONDecodeError:
+                            row[field] = [] # Fallback if data is corrupted
+            return jsonify(results)
+        return jsonify({"message": "Not found"}), 404
+    except sqlite3.OperationalError as e:
         return jsonify({"error": str(e)}), 400
 
 

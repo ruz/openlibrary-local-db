@@ -18,13 +18,13 @@ tasks = [
         "type": "works",
         "fields": ["ol_id", "title", "description", "authors", "subjects", "subject_people", "subject_places", "covers", "series"]
     },
-   # {
-   #     "file": "ol_dump_editions_2026-05-31.txt",
-   #     "type": "editions",
-   #     "fields": ["ol_id", "title", "subtitle", "publish_date", "publish_year", "number_of_pages", 
-   #                "physical_format", "publishers", "isbn_10", "isbn_13", 
-   #                "subjects", "languages", "covers", "works", "authors", "author_names"]
-   # }
+    {
+        "file": "ol_dump_editions_2026-05-31.txt",
+        "type": "editions",
+        "fields": ["ol_id", "title", "subtitle", "publish_date", "publish_year", "number_of_pages", 
+                   "physical_format", "publishers", "isbn_10", "isbn_13", 
+                   "subjects", "languages", "covers", "works", "authors", "author_names"]
+    }
 ]
 
 csv.field_size_limit(int(ct.c_ulong(-1).value // 2))
