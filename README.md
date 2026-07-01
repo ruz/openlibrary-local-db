@@ -6,7 +6,7 @@ Download the latest `editions`, `works`, and `authors` dumps from the [OpenLibra
 `data/unprocessed/`
 
 > [!TIP]
->For faster downloads you can use the torrents available at archive.org/details/ol_exports. Ensure you select the latest ol_dump file (e.g., ol_dump_2026-04-30), not the ol_cdump version.
+>For faster downloads you can use the torrents available at [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate). Ensure you select the latest ol_dump file (e.g., ol_dump_2026-04-30), not the ol_cdump version.
 
 ## 2. Process the Dumps
 Run the processing script to clean the data and extract the necessary fields. This script scans the `unprocessed` folder and saves the formatted CSV files into the `processed` folder.
