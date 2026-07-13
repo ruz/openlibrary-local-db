@@ -7,4 +7,4 @@ COPY api ./api
 RUN pip install .
 
 EXPOSE 5000
-CMD ["gunicorn", "-b", ":5000", "api.app:app"]
+CMD ["gunicorn", "-b", ":5000", "-w", "5", "--timeout", "120", "api.app:app"]
