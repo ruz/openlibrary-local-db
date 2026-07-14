@@ -19,6 +19,16 @@ def dict_factory(cursor, row):
         d[col[0]] = row[idx]
     return d
 
+def parse_json_fields(row, fields):
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str):
+            try:
+                row[field] = json.loads(value)
+            except json.JSONDecodeError:
+                row[field] = []
+    return row
+
 app.config['SWAGGER'] = {
   "openapi": "3.0.0",
   "info": {
@@ -123,13 +133,7 @@ def search(query):
         results = cur.execute(base_sql, params).fetchall()
         if results:
             for row in results:
-                json_fields = ['author_names', 'languages', 'isbn_13', 'isbn_10']
-                for field in json_fields:
-                    if isinstance(row.get(field), str):
-                        try:
-                            row[field] = json.loads(row[field])
-                        except json.JSONDecodeError:
-                            row[field] = [] # Fallback if data is corrupted
+                parse_json_fields(row, ['author_names', 'languages', 'isbn_13', 'isbn_10'])
             return jsonify(results)
         return jsonify({"message": "Not found"}), 404
     except sqlite3.OperationalError as e:
@@ -204,8 +208,12 @@ def get_edition(identifier):
     """
     result = cur.execute(sql, (target_ol_id,)).fetchone()
     if result:
+        parse_json_fields(result, [
+            'publishers', 'isbn_10', 'isbn_13', 'subjects',
+            'languages', 'authors', 'author_names', 'works'
+        ])
         return jsonify(result)
-    
+
     return jsonify({"message": f"Edition {identifier} not found"}), 404
 
 @app.route("/v1/work/<ol_id>")
@@ -221,14 +229,9 @@ def get_work(ol_id):
         description: The Open Library Work ID (e.g., OL17352669W)
     """
     sql = """
-        SELECT 
+        SELECT
             ol_id, title, description,
-            json(authors) as authors,
-            json(subjects) as subjects,
-            json(subject_people) as subject_people,
-            json(subject_places) as subject_places,
-            json(covers) as covers,
-            json(series) as series
+            authors, subjects, subject_people, subject_places, covers, series
         FROM works
         WHERE ol_id = ?
         LIMIT 1
@@ -240,6 +243,9 @@ def get_work(ol_id):
     result = cur.execute(sql, (clean_id,)).fetchone()
 
     if result:
+        parse_json_fields(result, [
+            'authors', 'subjects', 'subject_people', 'subject_places', 'covers', 'series'
+        ])
         return jsonify(result)
     return jsonify({"message": f"Work {ol_id} not found"}), 404
 
@@ -257,10 +263,9 @@ def get_author(ol_id):
         description: The Open Library Author ID (e.g., OL7115219A)
     """
     sql = """
-        SELECT 
+        SELECT
             ol_id, name, birth_date, death_date, bio,
-            json(alternate_names) as alternate_names,
-            json(photos) as photos
+            alternate_names, photos
         FROM authors
         WHERE ol_id = ?
         LIMIT 1
@@ -272,6 +277,7 @@ def get_author(ol_id):
     result = cur.execute(sql, (clean_id,)).fetchone()
 
     if result:
+        parse_json_fields(result, ['alternate_names', 'photos'])
         return jsonify(result)
     return jsonify({"message": f"Author {ol_id} not found"}), 404
 
