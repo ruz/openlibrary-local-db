@@ -281,6 +281,22 @@ def get_author(ol_id):
         return jsonify(result)
     return jsonify({"message": f"Author {ol_id} not found"}), 404
 
+@app.route("/v1/info")
+def info():
+    """
+    Get API version and OpenLibrary dump metadata
+    ---
+    responses:
+      200:
+        description: API and dump info.
+    """
+    return {
+        "name": "openlibrary-local-db-api",
+        "version": "1.0.0",
+        "docs": request.host_url + "api/docs",
+        "oldump_date": os.getenv("OLDUMP_DATE")
+    }
+
 @app.route("/")
 def index():
     if landing_page:
@@ -289,9 +305,4 @@ def index():
             return render_template(template_file)
         except Exception as e:
             print(f"Failed to render landing page: {e}")
-    return {
-        "name": "openlibrary-local-db-api",
-        "version": "1.0.0",
-        "docs": request.base_url + "docs",
-        "oldump_date": os.getenv("OLDUMP_DATE")
-    }
+    return info()
