@@ -6,6 +6,8 @@ import os
 from flasgger import Swagger
 import json
 
+load_dotenv()
+
 app = Flask(__name__)
 CORS(app)
 
@@ -29,6 +31,13 @@ def parse_json_fields(row, fields):
                 row[field] = []
     return row
 
+SEARCH_JSON_FIELDS = ("author_names", "languages", "isbn_13", "isbn_10")
+EDITION_JSON_FIELDS = ("publishers", "isbn_10", "isbn_13", "subjects", "languages", "authors", "author_names", "works")
+WORK_JSON_FIELDS = ("authors", "subjects", "subject_people", "subject_places", "covers", "series")
+AUTHOR_JSON_FIELDS = ("alternate_names", "photos")
+
+MAX_SEARCH_LIMIT = int(os.getenv("MAX_SEARCH_LIMIT", 100))
+
 app.config['SWAGGER'] = {
   "openapi": "3.0.0",
   "info": {
@@ -45,9 +54,7 @@ app.config['SWAGGER'] = {
 swagger = Swagger(app)
 
 
-load_dotenv()
 def get_db_connection():
-    print(os.getenv("OL_DB"))
     conn = sqlite3.connect(os.getenv("OL_DB"), check_same_thread=False)
     conn.row_factory = dict_factory
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -55,9 +62,19 @@ def get_db_connection():
     conn.execute("PRAGMA cache_size=-2000000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
 
+    for table, column in (("editions", "ol_id"), ("works", "ol_id"), ("authors", "ol_id")):
+        try:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ol_id ON {table}({column})")
+        except sqlite3.OperationalError as e:
+            app.logger.warning(f"Could not ensure index on {table}.{column}: {e}")
+
     return conn
 
 con = get_db_connection()
+
+@app.errorhandler(sqlite3.OperationalError)
+def handle_db_error(e):
+    return jsonify({"error": str(e)}), 400
 
 @app.route("/v1/search/<query>")
 def search(query):
@@ -73,6 +90,12 @@ def search(query):
         in: query
         type: integer
         default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
       - name: lang
         in: query
         type: string
@@ -82,16 +105,30 @@ def search(query):
         type: string
         enum: [relevance, newest, oldest]
         default: relevance
+    responses:
+      200:
+        description: >
+          Object with `results` (array of editions), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+      404:
+        description: No results found for the first page of this query.
     """
-    # 1. Get Parameters
+
     limit = request.args.get("limit", default=10, type=int)
+    if not limit or limit < 1:
+        limit = 10
+    limit = min(limit, MAX_SEARCH_LIMIT)
+
+    offset = request.args.get("offset", default=0, type=int)
+    if not offset or offset < 0:
+        offset = 0
+
     lang = request.args.get("lang", type=str)
     sort_mode = request.args.get("sort", default="relevance", type=str)
 
     words = query.split()
     safe_query = " AND ".join([f'"{word.replace('"', '""')}"' for word in words if word])
 
-    # 2. Build Query Components
     base_sql = """
         SELECT e.title, e.isbn_10, e.isbn_13, e.publish_date, e.author_names, e.languages
         FROM editions e
@@ -99,51 +136,55 @@ def search(query):
         WHERE f.editions_fts MATCH ?
     """
 
-    # 2.5 Ensure at least one ISBN is present
-    # We check that the JSON array is not empty
     base_sql += " AND (e.isbn_10 != '[]' OR e.isbn_13 != '[]')"
 
     params = [safe_query]
 
-    # 3. Add Language Filtering
     if lang:
         base_sql += " AND EXISTS (SELECT 1 FROM json_each(e.languages) WHERE value = ?)"
         params.append(lang)
 
-    # 4. Add Sorting Logic
     if sort_mode == "newest":
-        base_sql += " ORDER BY e.publish_year DESC"
+        base_sql += " ORDER BY e.publish_year DESC, e.rowid"
     elif sort_mode == "oldest":
         # Push year 0 (missing) to the bottom
-        base_sql += " ORDER BY e.publish_year = 0, e.publish_year ASC"
+        base_sql += " ORDER BY e.publish_year = 0, e.publish_year ASC, e.rowid"
     else:
         base_sql += """
             ORDER BY (
                 f.rank - (CASE WHEN json_array_length(e.author_names) > 0 THEN 0.5 ELSE 0 END)
-            ) DESC
+            ) DESC, e.rowid
         """
 
-    # 5. Add Limit
-    base_sql += " LIMIT ?"
-    params.append(limit)
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
 
-    # 6. Execute and Return
     cur = con.cursor()
-    try:
-        results = cur.execute(base_sql, params).fetchall()
-        if results:
-            for row in results:
-                parse_json_fields(row, ['author_names', 'languages', 'isbn_13', 'isbn_10'])
-            return jsonify(results)
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    if results:
+        for row in results:
+            parse_json_fields(row, SEARCH_JSON_FIELDS)
+    elif offset == 0:
         return jsonify({"message": "Not found"}), 404
-    except sqlite3.OperationalError as e:
-        return jsonify({"error": str(e)}), 400
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
 
 
 @app.route("/v1/edition/<identifier>")
 def get_edition(identifier):
     """
-    Get full details of a specific edition by OLID, ISBN-10, or ISBN-13
+    Get full details of a specific edition by OLID, ISBN-10, or ISBN-13.
+    Optimized to achieve sub-millisecond execution over 49M rows.
     ---
     parameters:
       - name: identifier
@@ -157,20 +198,9 @@ def get_edition(identifier):
       404:
         description: Edition not found.
     """
-    """
-    Get full details of a specific edition by OLID, ISBN-10, or ISBN-13.
-    Optimized to achieve sub-millisecond execution over 49M rows.
-    """
     cur = con.cursor()
 
     target_ol_id = None
-
-    #isbn_plan = cur.execute("EXPLAIN QUERY PLAN SELECT ol_id FROM isbn_lookup WHERE isbn = ? LIMIT 1", (identifier,)).fetchall()
-   # print("ISBN Lookup Plan:", isbn_plan)
-
-    # DEBUG: Check the Editions lookup plan
-   #editions_plan = cur.execute("EXPLAIN QUERY PLAN SELECT ol_id FROM editions WHERE ol_id = ? LIMIT 1", (identifier,)).fetchall()
-    #print("Editions Lookup Plan:", editions_plan)
 
     if identifier.startswith("OL"):
         target_ol_id = identifier
@@ -208,10 +238,7 @@ def get_edition(identifier):
     """
     result = cur.execute(sql, (target_ol_id,)).fetchone()
     if result:
-        parse_json_fields(result, [
-            'publishers', 'isbn_10', 'isbn_13', 'subjects',
-            'languages', 'authors', 'author_names', 'works'
-        ])
+        parse_json_fields(result, EDITION_JSON_FIELDS)
         return jsonify(result)
 
     return jsonify({"message": f"Edition {identifier} not found"}), 404
@@ -243,9 +270,7 @@ def get_work(ol_id):
     result = cur.execute(sql, (clean_id,)).fetchone()
 
     if result:
-        parse_json_fields(result, [
-            'authors', 'subjects', 'subject_people', 'subject_places', 'covers', 'series'
-        ])
+        parse_json_fields(result, WORK_JSON_FIELDS)
         return jsonify(result)
     return jsonify({"message": f"Work {ol_id} not found"}), 404
 
@@ -277,7 +302,7 @@ def get_author(ol_id):
     result = cur.execute(sql, (clean_id,)).fetchone()
 
     if result:
-        parse_json_fields(result, ['alternate_names', 'photos'])
+        parse_json_fields(result, AUTHOR_JSON_FIELDS)
         return jsonify(result)
     return jsonify({"message": f"Author {ol_id} not found"}), 404
 
@@ -304,5 +329,5 @@ def index():
         try:
             return render_template(template_file)
         except Exception as e:
-            print(f"Failed to render landing page: {e}")
+            app.logger.warning(f"Failed to render landing page: {e}")
     return info()

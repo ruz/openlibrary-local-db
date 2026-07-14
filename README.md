@@ -102,6 +102,14 @@ sqlite-utils optimize test.db
 ## 8. Running the API
 The backend is a Flask application managed with Poetry.
 
+> [!NOTE]
+> On first start, the API automatically creates indexes on `editions.ol_id`, `works.ol_id`, and `authors.ol_id` if they don't already exist (`CREATE INDEX IF NOT EXISTS`), so `/v1/edition`, `/v1/work`, and `/v1/author` lookups are fast without a manual step. Building these on a multi-GB database can take a few minutes the first time. If you'd rather pre-build them yourself before starting the API, run:
+> ```bash
+> sqlite-utils create-index test.db editions ol_id
+> sqlite-utils create-index test.db works ol_id
+> sqlite-utils create-index test.db authors ol_id
+> ```
+
 1.  Navigate to the project root.
 2.  Copy the example environment file:
     ```bash
