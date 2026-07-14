@@ -1,10 +1,11 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, make_response
 from flask_cors import CORS
 import sqlite3
 from dotenv import load_dotenv
 import os
 from flasgger import Swagger
 import json
+from functools import wraps
 
 load_dotenv()
 
@@ -37,6 +38,34 @@ WORK_JSON_FIELDS = ("authors", "subjects", "subject_people", "subject_places", "
 AUTHOR_JSON_FIELDS = ("alternate_names", "photos")
 
 MAX_SEARCH_LIMIT = int(os.getenv("MAX_SEARCH_LIMIT", 100))
+CACHE_MAX_AGE = int(os.getenv("CACHE_MAX_AGE", 3600))
+
+def get_db_cache_metadata():
+    """
+    The DB is a static dump that only changes when an operator re-imports it,
+    so its mtime/size make a cheap, self-invalidating cache key (os.stat is
+    a fast syscall, safe to call per-request).
+    """
+    try:
+        stat = os.stat(os.getenv("OL_DB"))
+    except OSError:
+        return None, None
+    return stat.st_mtime, f"{int(stat.st_mtime)}-{stat.st_size}"
+
+def cache_headers(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        response = make_response(view(*args, **kwargs))
+        if response.status_code == 200:
+            last_modified, etag = get_db_cache_metadata()
+            if last_modified is not None:
+                response.last_modified = last_modified
+                response.set_etag(etag)
+                response.cache_control.public = True
+                response.cache_control.max_age = CACHE_MAX_AGE
+                response = response.make_conditional(request)
+        return response
+    return wrapped
 
 app.config['SWAGGER'] = {
   "openapi": "3.0.0",
@@ -77,6 +106,7 @@ def handle_db_error(e):
     return jsonify({"error": str(e)}), 400
 
 @app.route("/v1/search/<query>")
+@cache_headers
 def search(query):
     """
     Search books with advanced filtering and sorting
@@ -181,6 +211,7 @@ def search(query):
 
 
 @app.route("/v1/edition/<identifier>")
+@cache_headers
 def get_edition(identifier):
     """
     Get full details of a specific edition by OLID, ISBN-10, or ISBN-13.
@@ -244,6 +275,7 @@ def get_edition(identifier):
     return jsonify({"message": f"Edition {identifier} not found"}), 404
 
 @app.route("/v1/work/<ol_id>")
+@cache_headers
 def get_work(ol_id):
     """
     Get full details of a work by OLID
@@ -276,6 +308,7 @@ def get_work(ol_id):
 
 
 @app.route("/v1/author/<ol_id>")
+@cache_headers
 def get_author(ol_id):
     """
     Get full details of an author by OLID
