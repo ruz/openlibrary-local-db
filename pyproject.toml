@@ -17,6 +17,11 @@ flasgger = "^0.9.7.1"
 
 [tool.poetry.group.dev.dependencies]
 sqlite-utils = "^3.36"
+pytest = "^9.1.1"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["poetry-core"]

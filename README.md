@@ -124,7 +124,15 @@ The backend is a Flask application managed with Poetry.
     poetry run flask run
     ```
 
-## 9. Running the Web Interface
+## 9. Running Tests
+The `api/` Flask app and `process_data.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
+
+```bash
+poetry install
+poetry run pytest tests/ -v
+```
+
+## 10. Running the Web Interface
 The frontend is a React application located in the `web` directory.
 
 1.  Navigate to the `web` directory.
