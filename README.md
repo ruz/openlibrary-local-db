@@ -156,7 +156,7 @@ sqlite-utils optimize test.db
 
 </details>
 
-## 8. Running the API
+## Running the API
 The backend is a Flask application managed with Poetry.
 
 > [!NOTE]
@@ -169,6 +169,29 @@ The backend is a Flask application managed with Poetry.
 
 > [!TIP]
 > If you ran `poetry run pipeline all` (and didn't pass `--skip-env`), `.env` has already been created/updated with `OL_DB` and `OLDUMP_DATE` — you can skip steps 1-3 below.
+
+### Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OL_DB` | *(required)* | Path to the SQLite database file to serve (e.g. `test.db`). |
+| `OLDUMP_DATE` | *(none)* | Date of the dump the database was built from (e.g. `2026-03-31`); also used by `pipeline.py` when `--date` isn't passed, and reported by the API's `/v1/status` info. |
+| `LANDING_PAGE` | *(none)* | Path to an HTML template to render at `/` (e.g. `app/index.html`); if unset, `/` has no landing page. |
+| `MAX_SEARCH_LIMIT` | `100` | Maximum number of results allowed per page for `/v1/search`. |
+| `CACHE_MAX_AGE` | `3600` | `Cache-Control: max-age` (in seconds) sent with cacheable API responses. |
+| `OVERRIDES_DB` | *(none)* | Path to the SQLite file storing [persistent local overrides](#persistent-local-overrides); overrides are entirely disabled until this is set. |
+| `EDIT_TOKEN` | *(none)* | Shared secret required (via `X-Edit-Token` header) to list/approve/reject suggestions. |
+| `ENABLE_SUGGESTIONS` | `false` | Set to `true`/`1`/`yes` to enable the public, unauthenticated `POST .../suggest` endpoints. |
+| `SUGGESTION_RATE_LIMIT` | `5 per hour` | Per-IP rate limit (Flask-Limiter syntax) applied to suggestion submissions. |
+| `RATELIMIT_STORAGE_URI` | `memory://` | Backend URI for Flask-Limiter's rate-limit counters; point at a shared store (e.g. Redis) for multi-worker deployments. |
+| `FLASK_APP` | *(none)* | Standard Flask entry point, e.g. `api.app` (used by `flask run`). |
+| `FLASK_ENV` / `FLASK_DEBUG` | *(none)* | Standard Flask dev-server settings. |
+
+The web frontend (`web/`) reads its own `.env`:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VITE_API_URL` | *(required)* | Base URL of the API the frontend talks to (e.g. `http://localhost:5000/`). |
 
 1.  Navigate to the project root.
 2.  Copy the example environment file:
@@ -184,13 +207,13 @@ The backend is a Flask application managed with Poetry.
     poetry run flask run
     ```
 
-## 9. Persistent Local Overrides (optional)
+## Persistent Local Overrides
 
-You can record local corrections to a record (fix a typo, add a missing ISBN, etc.) that survive the next `pipeline all`/`pipeline import` run, without touching OpenLibrary's own data. This feature is entirely opt-in: if you never set `OVERRIDES_DB`, nothing about it is active — no extra queries, no new tables, no behavior change.
+Local corrections to a record (fix a typo, add a missing ISBN, etc.) are stored separately from the main database, in a SQLite file set via `OVERRIDES_DB`. They survive the next `pipeline all`/`pipeline import` run and are merged into API responses at read time. If `OVERRIDES_DB` isn't set, this feature is entirely inactive.
 
-There is no direct, authenticated write endpoint over HTTP. Every change — including your own, as the operator — goes through a **suggestion queue**: anyone can `POST` a suggested correction (or a suggested reversion to plain upstream data) with no login required, but it only takes effect once you **approve** it with `EDIT_TOKEN`. `EDIT_TOKEN` gates moderation (listing/approving/rejecting), never a direct write — so a leaked or guessed token can, at worst, let someone review your moderation queue, not silently vandalize served data. This is what makes the public, unauthenticated submission endpoint safe to expose. On top of that review gate, submissions are rate-limited per IP and capped in size/volume as defense-in-depth (see below); the CLI's `pipeline overrides set/discard/...` commands remain a separate, direct path for the operator, since they require shell access to the box rather than a network-reachable header.
+Each override remembers the upstream value it was based on. If a later dump changes that value, the override is flagged `stale` instead of silently reapplying.
 
-Overrides are stored in a separate SQLite file (never touched by the pipeline's normal import/rebuild), so they persist automatically across dump updates. Each override also remembers the OpenLibrary value it was based on, so if a later dump changes that value upstream, the override is flagged `stale` for you to review instead of silently reapplying forever.
+Changes go through a suggestion queue: anyone can `POST` a suggested correction (or a reversion to upstream data) with no login required, but it only takes effect once approved with `EDIT_TOKEN`. `EDIT_TOKEN` gates moderation (list/approve/reject) only — it does not grant a direct write path. Submissions are also rate-limited per IP and capped in size/volume. The CLI's `pipeline overrides set/...` commands are a separate, direct path for the operator (shell access to the box, not a network-reachable endpoint).
 
 Only a fixed set of fields can be overridden per record type — the CLI's `overrides set` and the API's `POST .../suggest` reject anything else with an error:
 
@@ -212,6 +235,11 @@ poetry run pipeline overrides set works OL27448W --field title="Corrected Title"
 # List what's stored
 poetry run pipeline overrides list
 
+# List, approve, or reject pending suggestions from the public suggestion queue
+poetry run pipeline overrides suggestions list --status pending
+poetry run pipeline overrides suggestions approve 42
+poetry run pipeline overrides suggestions reject 42
+
 # After re-running the pipeline against a newer dump, check for upstream drift
 poetry run pipeline overrides sync
 
@@ -230,10 +258,10 @@ poetry run pipeline overrides clear --yes
 
 `pipeline overrides sync` also runs automatically at the end of `pipeline all` — it's a no-op if `OVERRIDES_DB` isn't set.
 
-Submitting a correction to OpenLibrary itself is a manual step: `export` produces a JSON file (OL key + patched fields) for you to review and apply yourself on openlibrary.org, since that requires your own OpenLibrary account/login and there's no automated submission.
+`export` produces a JSON file (OL key + patched fields) for manual submission on openlibrary.org — there's no automated submission, since that requires your own OpenLibrary account.
 
-### Suggesting an edit via the API (public, no login required)
-Set `ENABLE_SUGGESTIONS=true` in `.env` to turn this on (unset by default — the routes below 404 until you do). Anyone can propose a field correction or a full reversion to upstream data:
+### Suggesting an edit via the API
+Set `ENABLE_SUGGESTIONS=true` in `.env` (unset by default — the routes below 404 until you do). No login required:
 ```bash
 # Propose a field correction
 curl -X POST http://localhost:5000/v1/work/OL27448W/suggest \
@@ -245,12 +273,9 @@ curl -X POST http://localhost:5000/v1/work/OL27448W/suggest \
   -H "Content-Type: application/json" \
   -d '{"action": "delete", "note": "this correction is no longer accurate"}'
 ```
-The same `POST .../suggest` route exists for `/v1/author/<ol_id>` and `/v1/edition/<identifier>` (identifier may be an OL id or ISBN). A successful submission returns `201` with `{"id": ..., "status": "pending"}` — it is **not** applied yet and does not affect what `GET` returns.
+The same `POST .../suggest` route exists for `/v1/author/<ol_id>` and `/v1/edition/<identifier>` (identifier may be an OL id or ISBN). A successful submission returns `201` with `{"id": ..., "status": "pending"}` and does not affect what `GET` returns until approved.
 
-Submissions are throttled by `SUGGESTION_RATE_LIMIT` (default `5 per hour` per IP, via [Flask-Limiter](https://flask-limiter.readthedocs.io/)) and capped in size (oversized patches/notes are rejected) and volume (at most a handful of pending suggestions per record at once) — both `400`/`429` before anything is stored.
-
-> [!WARNING]
-> The default rate-limit storage is in-process memory (`RATELIMIT_STORAGE_URI=memory://`). The Docker image runs gunicorn with multiple workers, each with its *own* counter, so the effective global limit is looser than configured (up to ~worker-count times). For a public-facing deployment where this matters, point `RATELIMIT_STORAGE_URI` at a shared backend (e.g. Redis) that Flask-Limiter supports.
+Submissions are throttled by `SUGGESTION_RATE_LIMIT` (default `5 per hour` per IP, via [Flask-Limiter](https://flask-limiter.readthedocs.io/)) and capped in size and volume (oversized patches/notes, or too many pending suggestions on one record, are rejected with `400`/`429`).
 
 ### Moderating suggestions (requires `EDIT_TOKEN`)
 ```bash
@@ -271,7 +296,7 @@ curl -X POST http://localhost:5000/v1/suggestions/42/reject -H "X-Edit-Token: yo
 > [!NOTE]
 > Search (`/v1/search`) still matches against the original, un-overridden text — an edited title won't be *findable* by its new wording until a future dump re-indexes it. Overridden fields are still merged into individual result rows, though.
 
-## 10. Running Tests
+## Running Tests
 The `api/` Flask app, `process_data.py`, and `pipeline.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
 
 ```bash
@@ -279,8 +304,8 @@ poetry install
 poetry run pytest tests/ -v
 ```
 
-## 11. Running the Web Interface
-The frontend is a React application located in the `web` directory.
+## Running the Web Interface
+The frontend is a React application located in the `web` directory. It's intended for demonstrative purposes only (e.g. exercising lookups/search and the moderation flow by hand) — not a production-ready UI.
 
 1.  Navigate to the `web` directory.
 2.  Copy the example environment file:
