@@ -14,6 +14,24 @@ export function search(query, { limit, offset, lang, sort } = {}) {
         .then((r) => r.data);
 }
 
+export function listEditions({ limit, offset, lang, format, year_min, year_max, title, sort } = {}) {
+    return client
+        .get("v1/editions", { params: { limit, offset, lang, format, year_min, year_max, title, sort } })
+        .then((r) => r.data);
+}
+
+export function listWorks({ limit, offset, subject, title, sort } = {}) {
+    return client
+        .get("v1/works", { params: { limit, offset, subject, title, sort } })
+        .then((r) => r.data);
+}
+
+export function listAuthors({ limit, offset, name, sort } = {}) {
+    return client
+        .get("v1/authors", { params: { limit, offset, name, sort } })
+        .then((r) => r.data);
+}
+
 export function getEdition(identifier) {
     return client.get(`v1/edition/${encodeURIComponent(identifier)}`).then((r) => r.data);
 }

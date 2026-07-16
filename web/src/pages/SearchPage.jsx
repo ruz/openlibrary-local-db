@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { debounce } from "lodash";
-import { TextInput, Select, Label, Button } from "flowbite-react";
+import { TextInput, Select, Label } from "flowbite-react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
-import { RiSearch2Line, RiFilter3Line, RiSortAsc, RiArrowLeftSLine, RiArrowRightSLine } from "react-icons/ri";
+import { RiSearch2Line, RiFilter3Line, RiSortAsc } from "react-icons/ri";
 import { Link } from "react-router-dom";
 import languages from "../languages.json";
 import { search } from "../api/client";
 import { useInfo } from "../context/infoContext";
+import PageNav from "../components/PageNav";
 
 function resultToItem(item, i, offset) {
     const isbn = item.isbn_13?.[0] || item.isbn_10?.[0] || null;
@@ -179,16 +180,8 @@ export default function SearchPage() {
                 )}
             </div>
 
-            {showList && !loading && (offset > 0 || hasMore) && (
-                <div className="flex justify-between items-center mt-4">
-                    <Button size="sm" color="gray" disabled={offset === 0} onClick={() => goToPage(Math.max(0, offset - limit))}>
-                        <RiArrowLeftSLine className="mr-1" /> Previous
-                    </Button>
-                    <span className="text-xs text-gray-400">Showing results {offset + 1}&ndash;{offset + results.length}</span>
-                    <Button size="sm" color="gray" disabled={!hasMore} onClick={() => goToPage(offset + limit)}>
-                        Next <RiArrowRightSLine className="ml-1" />
-                    </Button>
-                </div>
+            {showList && !loading && (
+                <PageNav offset={offset} limit={limit} hasMore={hasMore} resultCount={results.length} onPageChange={goToPage} />
             )}
         </div>
     );

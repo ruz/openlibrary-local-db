@@ -107,6 +107,21 @@ def apply_override(result, entity_type, ol_id):
 ENTITY_JSON_FIELDS = {"editions": EDITION_JSON_FIELDS, "works": WORK_JSON_FIELDS, "authors": AUTHOR_JSON_FIELDS}
 
 
+def _paginate_params():
+    """Shared limit/offset parsing + clamping, used by search and the browse
+    (list) endpoints."""
+    limit = request.args.get("limit", default=10, type=int)
+    if not limit or limit < 1:
+        limit = 10
+    limit = min(limit, MAX_SEARCH_LIMIT)
+
+    offset = request.args.get("offset", default=0, type=int)
+    if not offset or offset < 0:
+        offset = 0
+
+    return limit, offset
+
+
 def _submitter_hash():
     return hashlib.sha256((request.remote_addr or "").encode()).hexdigest()
 
@@ -259,14 +274,7 @@ def search(query):
         description: No results found for the first page of this query.
     """
 
-    limit = request.args.get("limit", default=10, type=int)
-    if not limit or limit < 1:
-        limit = 10
-    limit = min(limit, MAX_SEARCH_LIMIT)
-
-    offset = request.args.get("offset", default=0, type=int)
-    if not offset or offset < 0:
-        offset = 0
+    limit, offset = _paginate_params()
 
     lang = request.args.get("lang", type=str)
     sort_mode = request.args.get("sort", default="relevance", type=str)
@@ -342,6 +350,120 @@ def resolve_edition_ol_id(identifier):
         # Handle both tuple and dict row-factory outputs safely
         return row["ol_id"] if isinstance(row, dict) else row[0]
     return None
+
+
+@app.route("/v1/editions")
+@cache_headers
+def list_editions():
+    """
+    Browse editions with filtering, sorting, and pagination.
+    ---
+    tags:
+      - Editions
+    parameters:
+      - name: limit
+        in: query
+        type: integer
+        default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
+      - name: lang
+        in: query
+        type: string
+        description: Language code (e.g., 'eng')
+      - name: format
+        in: query
+        type: string
+        description: Exact physical format (e.g., 'Hardcover')
+      - name: year_min
+        in: query
+        type: integer
+        description: Only include editions published in or after this year.
+      - name: year_max
+        in: query
+        type: integer
+        description: Only include editions published in or before this year.
+      - name: title
+        in: query
+        type: string
+        description: Case-insensitive title prefix filter.
+      - name: sort
+        in: query
+        type: string
+        enum: [title, title_desc, newest, oldest]
+        default: title
+    responses:
+      200:
+        description: >
+          Object with `results` (array of editions), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+    """
+    limit, offset = _paginate_params()
+
+    lang = request.args.get("lang", type=str)
+    fmt = request.args.get("format", type=str)
+    year_min = request.args.get("year_min", type=int)
+    year_max = request.args.get("year_max", type=int)
+    title = request.args.get("title", type=str)
+    sort_mode = request.args.get("sort", default="title", type=str)
+
+    base_sql = """
+        SELECT ol_id, title, subtitle, publish_date, publish_year, physical_format,
+               isbn_10, isbn_13, languages, author_names, works
+        FROM editions
+        WHERE 1=1
+    """
+    params = []
+
+    if lang:
+        base_sql += " AND EXISTS (SELECT 1 FROM json_each(languages) WHERE value = ?)"
+        params.append(lang)
+    if fmt:
+        base_sql += " AND physical_format = ?"
+        params.append(fmt)
+    if year_min is not None:
+        base_sql += " AND publish_year >= ?"
+        params.append(year_min)
+    if year_max is not None:
+        base_sql += " AND publish_year <= ?"
+        params.append(year_max)
+    if title:
+        base_sql += " AND title LIKE ? COLLATE NOCASE"
+        params.append(f"{title}%")
+
+    if sort_mode == "newest":
+        base_sql += " ORDER BY publish_year DESC, rowid"
+    elif sort_mode == "oldest":
+        base_sql += " ORDER BY publish_year = 0, publish_year ASC, rowid"
+    elif sort_mode == "title_desc":
+        base_sql += " ORDER BY title COLLATE NOCASE DESC, rowid"
+    else:
+        base_sql += " ORDER BY title COLLATE NOCASE ASC, rowid"
+
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
+
+    cur = con.cursor()
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    for row in results:
+        parse_json_fields(row, EDITION_JSON_FIELDS)
+        apply_override(row, "editions", row["ol_id"])
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
 
 
 @app.route("/v1/edition/<identifier>")
@@ -439,6 +561,91 @@ def suggest_edition(identifier):
     return _create_entity_suggestion("editions", target_ol_id, EDITION_PATCHABLE_FIELDS)
 
 
+@app.route("/v1/works")
+@cache_headers
+def list_works():
+    """
+    Browse works with filtering, sorting, and pagination.
+    ---
+    tags:
+      - Works
+    parameters:
+      - name: limit
+        in: query
+        type: integer
+        default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
+      - name: subject
+        in: query
+        type: string
+        description: Exact subject match (e.g., 'Fiction')
+      - name: title
+        in: query
+        type: string
+        description: Case-insensitive title prefix filter.
+      - name: sort
+        in: query
+        type: string
+        enum: [title, title_desc]
+        default: title
+    responses:
+      200:
+        description: >
+          Object with `results` (array of works), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+    """
+    limit, offset = _paginate_params()
+
+    subject = request.args.get("subject", type=str)
+    title = request.args.get("title", type=str)
+    sort_mode = request.args.get("sort", default="title", type=str)
+
+    base_sql = """
+        SELECT ol_id, title, description, authors, subjects, covers
+        FROM works
+        WHERE 1=1
+    """
+    params = []
+
+    if subject:
+        base_sql += " AND EXISTS (SELECT 1 FROM json_each(subjects) WHERE value = ?)"
+        params.append(subject)
+    if title:
+        base_sql += " AND title LIKE ? COLLATE NOCASE"
+        params.append(f"{title}%")
+
+    if sort_mode == "title_desc":
+        base_sql += " ORDER BY title COLLATE NOCASE DESC, rowid"
+    else:
+        base_sql += " ORDER BY title COLLATE NOCASE ASC, rowid"
+
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
+
+    cur = con.cursor()
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    for row in results:
+        parse_json_fields(row, WORK_JSON_FIELDS)
+        apply_override(row, "works", row["ol_id"])
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
+
+
 @app.route("/v1/work/<ol_id>")
 @cache_headers
 def get_work(ol_id):
@@ -512,6 +719,83 @@ def suggest_work(ol_id):
     """
     clean_id = ol_id.replace("/works/", "")
     return _create_entity_suggestion("works", clean_id, WORK_PATCHABLE_FIELDS)
+
+
+@app.route("/v1/authors")
+@cache_headers
+def list_authors():
+    """
+    Browse authors with filtering, sorting, and pagination.
+    ---
+    tags:
+      - Authors
+    parameters:
+      - name: limit
+        in: query
+        type: integer
+        default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
+      - name: name
+        in: query
+        type: string
+        description: Case-insensitive name prefix filter.
+      - name: sort
+        in: query
+        type: string
+        enum: [name, name_desc]
+        default: name
+    responses:
+      200:
+        description: >
+          Object with `results` (array of authors), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+    """
+    limit, offset = _paginate_params()
+
+    name = request.args.get("name", type=str)
+    sort_mode = request.args.get("sort", default="name", type=str)
+
+    base_sql = """
+        SELECT ol_id, name, birth_date, death_date, photos
+        FROM authors
+        WHERE 1=1
+    """
+    params = []
+
+    if name:
+        base_sql += " AND name LIKE ? COLLATE NOCASE"
+        params.append(f"{name}%")
+
+    if sort_mode == "name_desc":
+        base_sql += " ORDER BY name COLLATE NOCASE DESC, rowid"
+    else:
+        base_sql += " ORDER BY name COLLATE NOCASE ASC, rowid"
+
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
+
+    cur = con.cursor()
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    for row in results:
+        parse_json_fields(row, AUTHOR_JSON_FIELDS)
+        apply_override(row, "authors", row["ol_id"])
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
 
 
 @app.route("/v1/author/<ol_id>")

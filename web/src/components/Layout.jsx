@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
-import { Navbar, Badge } from "flowbite-react";
+import { Navbar, Badge, Dropdown } from "flowbite-react";
 import { useInfo } from "../context/infoContext";
 
 function NavLink({ to, children }) {
@@ -17,6 +17,8 @@ function NavLink({ to, children }) {
 
 export default function Layout() {
     const { info } = useInfo();
+    const location = useLocation();
+    const browseActive = location.pathname.startsWith("/browse");
 
     return (
         <div className="min-h-screen flex flex-col">
@@ -46,6 +48,19 @@ export default function Layout() {
                 </div>
                 <Navbar.Collapse>
                     <NavLink to="/">Search</NavLink>
+                    <Dropdown
+                        inline
+                        arrowIcon={false}
+                        label={
+                            <span className={`text-sm font-medium ${browseActive ? "text-blue-700" : "text-gray-600 hover:text-blue-700"}`}>
+                                Browse
+                            </span>
+                        }
+                    >
+                        <Dropdown.Item as={Link} to="/browse/editions">Editions</Dropdown.Item>
+                        <Dropdown.Item as={Link} to="/browse/works">Works</Dropdown.Item>
+                        <Dropdown.Item as={Link} to="/browse/authors">Authors</Dropdown.Item>
+                    </Dropdown>
                     {info?.overrides_enabled && <NavLink to="/moderate">Moderation</NavLink>}
                 </Navbar.Collapse>
             </Navbar>

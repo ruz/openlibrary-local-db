@@ -96,6 +96,15 @@ def run_import(args, date_str=None):
     return date_str
 
 
+BROWSE_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_editions_publish_year ON editions(publish_year);
+CREATE INDEX IF NOT EXISTS idx_editions_physical_format ON editions(physical_format);
+CREATE INDEX IF NOT EXISTS idx_editions_title_nocase ON editions(title COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_works_title_nocase ON works(title COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_authors_name_nocase ON authors(name COLLATE NOCASE);
+"""
+
+
 def run_index(args):
     db = sqlite_utils.Database(args.db)
     db.executescript(ISBN_LOOKUP_SQL)
@@ -103,7 +112,8 @@ def run_index(args):
     for table in TABLE_TYPES:
         if table in db.table_names() and "ol_id" not in db[table].pks:
             db[table].create_index(["ol_id"], if_not_exists=True)
-    print("Built isbn_lookup table and ol_id indexes.")
+    db.executescript(BROWSE_INDEXES_SQL)
+    print("Built isbn_lookup table, ol_id indexes, and browse indexes.")
 
 
 def run_fts(args):
