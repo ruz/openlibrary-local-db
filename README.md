@@ -322,6 +322,24 @@ poetry run pytest tests/ -v
 ## Running the Web Interface
 The frontend is a React application located in the `web` directory. It's intended for demonstrative purposes only (e.g. exercising lookups/search and the moderation flow by hand), not a production-ready UI.
 
+<details>
+<summary><strong>Screenshots</strong></summary>
+
+<p align="center">
+  <img src="assets/search.png" width="49%" alt="Search page" />
+  <img src="assets/edition-detail.png" width="49%" alt="Edition detail page" />
+</p>
+<p align="center">
+  <img src="assets/browse-editions.png" width="49%" alt="Browse editions page" />
+  <img src="assets/browse-works.png" width="49%" alt="Browse works page" />
+</p>
+<p align="center">
+  <img src="assets/browse-authors.png" width="49%" alt="Browse authors page" />
+  <img src="assets/author-detail.png" width="49%" alt="Author detail page" />
+</p>
+
+</details>
+
 1.  Navigate to the `web` directory.
 2.  Copy the example environment file:
     ```bash
