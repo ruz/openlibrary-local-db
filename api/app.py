@@ -183,7 +183,15 @@ app.config['SWAGGER'] = {
     },
     "version": "1.0.0"
   },
-    "specs_route": "/api/docs"
+    "specs_route": "/api/docs",
+    "tags": [
+        {"name": "Search", "description": "Full-text search over editions."},
+        {"name": "Editions", "description": "Lookup and suggest corrections for editions."},
+        {"name": "Works", "description": "Lookup and suggest corrections for works."},
+        {"name": "Authors", "description": "Lookup and suggest corrections for authors."},
+        {"name": "Moderation", "description": "Review and manage the suggestion queue. Requires X-Edit-Token."},
+        {"name": "Info", "description": "API and dump metadata."},
+    ],
 }
 swagger = Swagger(app)
 
@@ -216,6 +224,8 @@ def search(query):
     """
     Search books with advanced filtering and sorting
     ---
+    tags:
+      - Search
     parameters:
       - name: query
         in: path
@@ -341,6 +351,8 @@ def get_edition(identifier):
     Get full details of a specific edition by OLID, ISBN-10, or ISBN-13.
     Optimized to achieve sub-millisecond execution over 49M rows.
     ---
+    tags:
+      - Editions
     parameters:
       - name: identifier
         in: path
@@ -395,6 +407,8 @@ def suggest_edition(identifier):
     No authentication required; rate limited. Suggestions are queued for
     operator review and never affect served data until approved.
     ---
+    tags:
+      - Editions
     parameters:
       - name: identifier
         in: path
@@ -431,6 +445,8 @@ def get_work(ol_id):
     """
     Get full details of a work by OLID
     ---
+    tags:
+      - Works
     parameters:
       - name: ol_id
         in: path
@@ -468,6 +484,8 @@ def suggest_work(ol_id):
     No authentication required; rate limited. Suggestions are queued for
     operator review and never affect served data until approved.
     ---
+    tags:
+      - Works
     parameters:
       - name: ol_id
         in: path
@@ -502,6 +520,8 @@ def get_author(ol_id):
     """
     Get full details of an author by OLID
     ---
+    tags:
+      - Authors
     parameters:
       - name: ol_id
         in: path
@@ -539,6 +559,8 @@ def suggest_author(ol_id):
     No authentication required; rate limited. Suggestions are queued for
     operator review and never affect served data until approved.
     ---
+    tags:
+      - Authors
     parameters:
       - name: ol_id
         in: path
@@ -573,6 +595,8 @@ def list_suggestions_route():
     """
     List stored suggestions (moderation surface). Requires X-Edit-Token.
     ---
+    tags:
+      - Moderation
     parameters:
       - name: status
         in: query
@@ -601,6 +625,8 @@ def approve_suggestion_route(suggestion_id):
     Approve a pending suggestion, promoting it into a real override.
     Requires X-Edit-Token.
     ---
+    tags:
+      - Moderation
     parameters:
       - name: suggestion_id
         in: path
@@ -637,6 +663,8 @@ def reject_suggestion_route(suggestion_id):
     """
     Reject a pending suggestion. Requires X-Edit-Token.
     ---
+    tags:
+      - Moderation
     parameters:
       - name: suggestion_id
         in: path
@@ -659,6 +687,8 @@ def info():
     """
     Get API version and OpenLibrary dump metadata
     ---
+    tags:
+      - Info
     responses:
       200:
         description: API and dump info.
