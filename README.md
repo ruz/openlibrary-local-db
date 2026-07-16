@@ -106,19 +106,18 @@ The API's `/v1/edition/<identifier>` endpoint looks up editions by ISBN via a sm
 ```bash
 sqlite-utils query test.db "
   CREATE TABLE isbn_lookup AS
-  SELECT value AS isbn, MIN(ol_id) AS ol_id
-  FROM editions, json_each(isbn_10)
-  GROUP BY value
-  UNION
-  SELECT value AS isbn, MIN(ol_id) AS ol_id
-  FROM editions, json_each(isbn_13)
-  GROUP BY value
+  SELECT isbn, MIN(ol_id) AS ol_id FROM (
+      SELECT value AS isbn, ol_id FROM editions, json_each(isbn_10)
+      UNION ALL
+      SELECT value AS isbn, ol_id FROM editions, json_each(isbn_13)
+  )
+  GROUP BY isbn
 "
 sqlite-utils create-index test.db isbn_lookup isbn --unique
 ```
 
 > [!NOTE]
-> A small fraction of ISBNs are shared by more than one edition (e.g. simultaneous reprints). `MIN(ol_id)` picks a single, deterministic edition to resolve to in that case.
+> A small fraction of ISBNs are shared by more than one edition (e.g. simultaneous reprints, or the same ISBN misfiled under both `isbn_10` and `isbn_13` on different editions). `MIN(ol_id)` picks a single, deterministic edition to resolve to in that case, computed across both columns together so the same ISBN can't end up as two rows.
 
 ## 5. Enable Full-Text Search (FTS)
 ```bash

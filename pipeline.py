@@ -23,13 +23,12 @@ TABLE_TYPES = ("authors", "works", "editions")
 ISBN_LOOKUP_SQL = """
 DROP TABLE IF EXISTS isbn_lookup;
 CREATE TABLE isbn_lookup AS
-SELECT value AS isbn, MIN(ol_id) AS ol_id
-FROM editions, json_each(isbn_10)
-GROUP BY value
-UNION
-SELECT value AS isbn, MIN(ol_id) AS ol_id
-FROM editions, json_each(isbn_13)
-GROUP BY value
+SELECT isbn, MIN(ol_id) AS ol_id FROM (
+    SELECT value AS isbn, ol_id FROM editions, json_each(isbn_10)
+    UNION ALL
+    SELECT value AS isbn, ol_id FROM editions, json_each(isbn_13)
+)
+GROUP BY isbn
 """
 
 
