@@ -117,6 +117,12 @@ def decompress_gz_to_txt(gz_path, txt_path):
         shutil.copyfileobj(src, dst)
 
 
+def is_dump_complete(dump_type, date_str, input_path):
+    """True if the decompressed dump file for dump_type/date_str already exists."""
+    txt_path = os.path.join(input_path, f"ol_dump_{dump_type}_{date_str}.txt")
+    return os.path.exists(txt_path)
+
+
 def run_via_http(dump_type, date_str, input_path):
     """
     Streams the fixed 'latest' HTTP URL for dump_type to
@@ -195,6 +201,9 @@ def run_via_http(dump_type, date_str, input_path):
 
 def _download_all_via_http(input_path, date_str):
     for dump_type in DUMP_TYPES:
+        if is_dump_complete(dump_type, date_str, input_path):
+            print(f"{dump_type} dump for {date_str} already present; skipping HTTP download.")
+            continue
         run_via_http(dump_type, date_str, input_path)
 
 
@@ -256,8 +265,20 @@ def run_via_torrent(date_str, identifier, input_path):
         file_paths = [ti.files().file_path(i) for i in range(ti.num_files())]
         wanted_indices = select_wanted_files(file_paths, date_str)
 
+        to_download = {
+            dump_type: index
+            for dump_type, index in wanted_indices.items()
+            if not is_dump_complete(dump_type, date_str, input_path)
+        }
+        already_present = set(wanted_indices) - set(to_download)
+        for dump_type in sorted(already_present):
+            print(f"{dump_type} dump for {date_str} already present; skipping torrent download.")
+
+        if not to_download:
+            return
+
         file_priorities = [0] * ti.num_files()
-        for index in wanted_indices.values():
+        for index in to_download.values():
             file_priorities[index] = 4
 
         session = lt.session()
@@ -273,7 +294,7 @@ def run_via_torrent(date_str, identifier, input_path):
 
         with tqdm(
             total=None, unit="B", unit_scale=True, unit_divisor=1024,
-            desc="authors+works+editions (torrent)",
+            desc="+".join(sorted(to_download)) + " (torrent)",
         ) as bar:
             while True:
                 status = handle.status()
@@ -307,7 +328,7 @@ def run_via_torrent(date_str, identifier, input_path):
 
         session.remove_torrent(handle)
 
-        for dump_type, index in wanted_indices.items():
+        for dump_type, index in to_download.items():
             downloaded_path = os.path.join(str(input_path), file_paths[index])
             gz_path = os.path.join(str(input_path), f"ol_dump_{dump_type}_{date_str}.txt.gz")
             txt_path = os.path.join(str(input_path), f"ol_dump_{dump_type}_{date_str}.txt")

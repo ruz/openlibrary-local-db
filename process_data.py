@@ -34,17 +34,21 @@ tasks = []
 def detect_dump_date(path, extension="txt"):
     """
     Scans path for files named ol_dump_(authors|works|editions)_<date>.<extension>.
-    Returns the most recent YYYY-MM-DD date found, or None if no matches exist.
+    Returns the most recent YYYY-MM-DD date for which ALL dump types (authors,
+    works, editions) are present, or None if no such date exists.
     """
-    dates_found = set()
+    required_types = {template["type"] for template in TASK_TEMPLATES}
+    types_by_date = {}
     if os.path.isdir(path):
         for fname in os.listdir(path):
             match = DUMP_FILENAME_RE.match(fname)
             if match and match.group(3) == extension:
-                dates_found.add(match.group(2))
-    if not dates_found:
+                dump_type, dump_date = match.group(1), match.group(2)
+                types_by_date.setdefault(dump_date, set()).add(dump_type)
+    complete_dates = [d for d, types in types_by_date.items() if required_types <= types]
+    if not complete_dates:
         return None
-    return sorted(dates_found)[-1]
+    return sorted(complete_dates)[-1]
 
 def build_tasks(date_str):
     """Builds the tasks list (with resolved filenames) for a given dump date."""
