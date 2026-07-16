@@ -281,12 +281,22 @@ def run_via_torrent(date_str, identifier, input_path):
         for index in to_download.values():
             file_priorities[index] = 4
 
-        session = lt.session()
+        session = lt.session({
+            "connections_limit": 400,      # default ~200; raise ceiling on concurrent peers
+            "download_rate_limit": 0,      # explicit unlimited
+            "upload_rate_limit": 0,        # explicit unlimited
+        })
         handle = session.add_torrent({
             "ti": ti,
             "save_path": str(input_path),
             "file_priorities": file_priorities,
         })
+
+        # archive.org itself is often the only fast seed; webseeding lets
+        # libtorrent pull the wanted files over plain HTTP in parallel with
+        # (or instead of) BitTorrent peers, so speed doesn't depend on swarm health.
+        for index in to_download.values():
+            handle.add_url_seed(f"https://archive.org/download/{identifier}/{file_paths[index]}")
 
         start_time = time.monotonic()
         last_progress_time = start_time
