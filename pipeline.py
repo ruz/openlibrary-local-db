@@ -95,13 +95,15 @@ def run_import(args, date_str=None):
     return date_str
 
 
-BROWSE_INDEXES_SQL = """
-CREATE INDEX IF NOT EXISTS idx_editions_publish_year ON editions(publish_year);
-CREATE INDEX IF NOT EXISTS idx_editions_physical_format ON editions(physical_format);
-CREATE INDEX IF NOT EXISTS idx_editions_title_nocase ON editions(title COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_works_title_nocase ON works(title COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_authors_name_nocase ON authors(name COLLATE NOCASE);
-"""
+BROWSE_INDEXES_SQL = {
+    "editions": """
+        CREATE INDEX IF NOT EXISTS idx_editions_publish_year ON editions(publish_year);
+        CREATE INDEX IF NOT EXISTS idx_editions_physical_format ON editions(physical_format);
+        CREATE INDEX IF NOT EXISTS idx_editions_title_nocase ON editions(title COLLATE NOCASE);
+    """,
+    "works": "CREATE INDEX IF NOT EXISTS idx_works_title_nocase ON works(title COLLATE NOCASE);",
+    "authors": "CREATE INDEX IF NOT EXISTS idx_authors_name_nocase ON authors(name COLLATE NOCASE);",
+}
 
 
 def run_index(args):
@@ -111,7 +113,9 @@ def run_index(args):
     for table in TABLE_TYPES:
         if table in db.table_names() and "ol_id" not in db[table].pks:
             db[table].create_index(["ol_id"], if_not_exists=True)
-    db.executescript(BROWSE_INDEXES_SQL)
+    for table, sql in BROWSE_INDEXES_SQL.items():
+        if table in db.table_names():
+            db.executescript(sql)
     print("Built isbn_lookup table, ol_id indexes, and browse indexes.")
 
 
