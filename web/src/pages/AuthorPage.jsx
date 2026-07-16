@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Badge, Button, Spinner } from "flowbite-react";
-import { getAuthor } from "../api/client";
+import { getAuthor, listAuthorWorks } from "../api/client";
 import { useInfo } from "../context/infoContext";
 import SuggestEditModal from "../components/SuggestEditModal";
+import PageNav from "../components/PageNav";
+
+const WORKS_LIMIT = 10;
 
 function Field({ label, value }) {
     if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return null;
@@ -23,6 +26,11 @@ export default function AuthorPage() {
     const [notFound, setNotFound] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
 
+    const [works, setWorks] = useState([]);
+    const [worksLoading, setWorksLoading] = useState(false);
+    const [worksOffset, setWorksOffset] = useState(0);
+    const [worksHasMore, setWorksHasMore] = useState(false);
+
     useEffect(() => {
         setLoading(true);
         setNotFound(false);
@@ -38,6 +46,25 @@ export default function AuthorPage() {
             }
         );
     }, [olId]);
+
+    const loadWorks = (offset) => {
+        setWorksLoading(true);
+        listAuthorWorks(olId, { limit: WORKS_LIMIT, offset }).then(
+            (data) => {
+                setWorks(data.results || []);
+                setWorksHasMore(!!data.has_more);
+                setWorksOffset(offset);
+                setWorksLoading(false);
+            },
+            () => setWorksLoading(false)
+        );
+    };
+
+    useEffect(() => {
+        if (!author) return;
+        loadWorks(0);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [author]);
 
     if (loading) {
         return (
@@ -90,6 +117,39 @@ export default function AuthorPage() {
                         </Button>
                     )}
                 </div>
+            </div>
+
+            <div className="mt-8">
+                <h2 className="text-lg font-semibold mb-2">Works</h2>
+                {worksLoading ? (
+                    <div className="flex justify-center py-8">
+                        <Spinner />
+                    </div>
+                ) : works.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No works found for this author.</p>
+                ) : (
+                    <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+                        {works.map((w) => (
+                            <div key={w.ol_id} className="p-4 border-b last:border-0 hover:bg-gray-50 transition-colors">
+                                <Link to={`/work/${encodeURIComponent(w.ol_id)}`} className="group">
+                                    <p className="font-semibold text-blue-700 group-hover:underline">{w.title}</p>
+                                </Link>
+                                {w.subjects?.length > 0 && (
+                                    <p className="text-sm text-gray-500 truncate">{w.subjects.slice(0, 5).join(", ")}</p>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+                {!worksLoading && works.length > 0 && (
+                    <PageNav
+                        offset={worksOffset}
+                        limit={WORKS_LIMIT}
+                        hasMore={worksHasMore}
+                        resultCount={works.length}
+                        onPageChange={loadWorks}
+                    />
+                )}
             </div>
 
             <SuggestEditModal

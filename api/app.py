@@ -682,6 +682,84 @@ def get_work(ol_id):
     return jsonify({"message": f"Work {ol_id} not found"}), 404
 
 
+@app.route("/v1/work/<ol_id>/editions")
+@cache_headers
+def list_work_editions(ol_id):
+    """
+    List editions belonging to a work, paginated.
+    ---
+    tags:
+      - Works
+    parameters:
+      - name: ol_id
+        in: path
+        type: string
+        required: true
+        description: The Open Library Work ID (e.g., OL17352669W)
+      - name: limit
+        in: query
+        type: integer
+        default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
+      - name: sort
+        in: query
+        type: string
+        enum: [title, title_desc, newest, oldest]
+        default: title
+    responses:
+      200:
+        description: >
+          Object with `results` (array of editions), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+    """
+    limit, offset = _paginate_params()
+    sort_mode = request.args.get("sort", default="title", type=str)
+    clean_id = ol_id.replace("/works/", "")
+
+    base_sql = """
+        SELECT ol_id, title, subtitle, publish_date, publish_year, physical_format,
+               isbn_10, isbn_13, languages, author_names, works
+        FROM editions
+        WHERE EXISTS (SELECT 1 FROM json_each(works) WHERE value = ?)
+    """
+    params = [clean_id]
+
+    if sort_mode == "newest":
+        base_sql += " ORDER BY publish_year DESC, rowid"
+    elif sort_mode == "oldest":
+        base_sql += " ORDER BY publish_year = 0, publish_year ASC, rowid"
+    elif sort_mode == "title_desc":
+        base_sql += " ORDER BY title COLLATE NOCASE DESC, rowid"
+    else:
+        base_sql += " ORDER BY title COLLATE NOCASE ASC, rowid"
+
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
+
+    cur = con.cursor()
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    for row in results:
+        parse_json_fields(row, EDITION_JSON_FIELDS)
+        apply_override(row, "editions", row["ol_id"])
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
+
+
 @app.route("/v1/work/<ol_id>/suggest", methods=["POST"])
 @require_suggestions_enabled
 @limiter.limit(SUGGESTION_RATE_LIMIT)
@@ -832,6 +910,79 @@ def get_author(ol_id):
         apply_override(result, "authors", clean_id)
         return jsonify(result)
     return jsonify({"message": f"Author {ol_id} not found"}), 404
+
+
+@app.route("/v1/author/<ol_id>/works")
+@cache_headers
+def list_author_works(ol_id):
+    """
+    List works by an author, paginated.
+    ---
+    tags:
+      - Authors
+    parameters:
+      - name: ol_id
+        in: path
+        type: string
+        required: true
+        description: The Open Library Author ID (e.g., OL7115219A)
+      - name: limit
+        in: query
+        type: integer
+        default: 10
+        description: Maximum number of results to return (capped at 100).
+      - name: offset
+        in: query
+        type: integer
+        default: 0
+        description: Number of results to skip, for pagination.
+      - name: sort
+        in: query
+        type: string
+        enum: [title, title_desc]
+        default: title
+    responses:
+      200:
+        description: >
+          Object with `results` (array of works), `limit`, `offset`,
+          and `has_more` (whether another page is available).
+    """
+    limit, offset = _paginate_params()
+    sort_mode = request.args.get("sort", default="title", type=str)
+    clean_id = ol_id.replace("/authors/", "")
+
+    base_sql = """
+        SELECT ol_id, title, description, authors, subjects, covers
+        FROM works
+        WHERE EXISTS (SELECT 1 FROM json_each(authors) WHERE value = ?)
+    """
+    params = [clean_id]
+
+    if sort_mode == "title_desc":
+        base_sql += " ORDER BY title COLLATE NOCASE DESC, rowid"
+    else:
+        base_sql += " ORDER BY title COLLATE NOCASE ASC, rowid"
+
+    base_sql += " LIMIT ? OFFSET ?"
+    params.append(limit + 1)
+    params.append(offset)
+
+    cur = con.cursor()
+    results = cur.execute(base_sql, params).fetchall()
+
+    has_more = len(results) > limit
+    results = results[:limit]
+
+    for row in results:
+        parse_json_fields(row, WORK_JSON_FIELDS)
+        apply_override(row, "works", row["ol_id"])
+
+    return jsonify({
+        "results": results,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    })
 
 
 @app.route("/v1/author/<ol_id>/suggest", methods=["POST"])

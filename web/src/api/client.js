@@ -32,6 +32,18 @@ export function listAuthors({ limit, offset, name, sort } = {}) {
         .then((r) => r.data);
 }
 
+export function listWorkEditions(workOlId, { limit, offset, sort } = {}) {
+    return client
+        .get(`v1/work/${encodeURIComponent(workOlId)}/editions`, { params: { limit, offset, sort } })
+        .then((r) => r.data);
+}
+
+export function listAuthorWorks(authorOlId, { limit, offset, sort } = {}) {
+    return client
+        .get(`v1/author/${encodeURIComponent(authorOlId)}/works`, { params: { limit, offset, sort } })
+        .then((r) => r.data);
+}
+
 export function getEdition(identifier) {
     return client.get(`v1/edition/${encodeURIComponent(identifier)}`).then((r) => r.data);
 }
