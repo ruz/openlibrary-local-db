@@ -20,21 +20,21 @@ This project uses [Poetry](https://python-poetry.org/) to manage dependencies an
 poetry install
 ```
 
-## Quick Start: Automated Pipeline
+## Quick Start
 
-`pipeline.py` automates the entire process end-to-end (downloading dumps, processing, importing to SQLite, building the ISBN lookup table, enabling FTS, and optimizing — steps 1-7 below) in one command, and creates/updates your `.env` file so the API is ready to run immediately afterward. You don't need to download anything yourself first — `poetry run pipeline all` downloads the dumps automatically, and skips the download step entirely if matching dump files are already present in `data/unprocessed/`.
+`pipeline.py` automates the entire process end-to-end (downloading dumps, processing, importing to SQLite, building the ISBN lookup table, enabling FTS, and optimizing, steps 1-7 below) in one command, and creates/updates your `.env` file so the API is ready to run immediately afterward. There's nothing to download yourself first: `poetry run pipeline all` fetches the dumps automatically, and skips the download step entirely if matching dump files are already present in `data/unprocessed/`.
 
 ```bash
 poetry run pipeline all
 ```
 
 Common options:
-- `--limit N` — process only N rows per dump file (for a quick smoke test; see "Testing with a smaller sample" below)
-- `--input-path`, `--output-path`, `--db` — override the default `./data/unprocessed/`, `./data/processed/`, `test.db` locations
-- `--date YYYY-MM-DD` — pin the dump date instead of auto-detecting it (from archive.org for downloads, or from filenames in `--input-path` for processing)
-- `--method {auto,torrent,http}` — transport for the download step (default: `auto`, torrent preferred with HTTP fallback)
-- `--skip-download` — don't download dump files; use files already present in `--input-path`
-- `--skip-env` — don't create/update `.env`
+- `--limit N`: process only N rows per dump file (for a quick smoke test; see "Testing with a smaller sample" below)
+- `--input-path`, `--output-path`, `--db`: override the default `./data/unprocessed/`, `./data/processed/`, `test.db` locations
+- `--date YYYY-MM-DD`: pin the dump date instead of auto-detecting it (from archive.org for downloads, or from filenames in `--input-path` for processing)
+- `--method {auto,torrent,http}`: transport for the download step (default: `auto`, torrent preferred with HTTP fallback)
+- `--skip-download`: don't download dump files; use files already present in `--input-path`
+- `--skip-env`: don't create/update `.env`
 
 Each stage can also be run independently, useful for re-running just one step:
 ```bash
@@ -58,10 +58,10 @@ Download the latest `editions`, `works`, and `authors` dumps automatically:
 poetry run pipeline download
 ```
 
-By default this prefers BitTorrent (faster, and lighter load on OpenLibrary's servers) via the pure-Python [`libtorrent`](https://pypi.org/project/libtorrent/) package — no separate torrent client or binary to install — and automatically falls back to direct HTTP download if BitTorrent isn't available (e.g. no wheel for your platform, network blocks torrent traffic). Force a specific transport with `--method torrent` or `--method http`. Files are placed in `data/unprocessed/`.
+By default this prefers BitTorrent (faster, and lighter load on OpenLibrary's servers) via the pure-Python [`libtorrent`](https://pypi.org/project/libtorrent/) package (no separate torrent client or binary to install), and automatically falls back to direct HTTP download if BitTorrent isn't available (e.g. no wheel for your platform, network blocks torrent traffic). Force a specific transport with `--method torrent` or `--method http`. Files are placed in `data/unprocessed/`.
 
 > [!TIP]
-> You can still download the dumps manually from the [OpenLibrary Developer Portal](https://openlibrary.org/developers/dumps) or [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate) and place them in `data/unprocessed/` yourself — this remains fully supported.
+> You can still download the dumps manually from the [OpenLibrary Developer Portal](https://openlibrary.org/developers/dumps) or [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate) and place them in `data/unprocessed/` yourself. This remains fully supported.
 
 ## 2. Process the Dumps
 Run the processing script to clean the data and extract the necessary fields. This script scans the `unprocessed` folder and saves the formatted CSV files into the `processed` folder.
@@ -159,6 +159,21 @@ sqlite-utils optimize test.db
 ## Running the API
 The backend is a Flask application managed with Poetry.
 
+1.  Navigate to the project root.
+2.  Copy the example environment file:
+    ```bash
+    cp .env.example .env
+    ```
+3.  Edit `.env` and set at least `OL_DB` (path to your database file, e.g. `"test.db"`) and `OLDUMP_DATE` (e.g. `"2026-03-31"`). See [Environment variables](#environment-variables) below for the full list of options.
+
+    > [!TIP]
+    > If you ran `poetry run pipeline all` (and didn't pass `--skip-env`), `.env` has already been created/updated for you, so skip to step 4.
+4.  Install dependencies and start the development server:
+    ```bash
+    poetry install
+    poetry run flask run
+    ```
+
 > [!NOTE]
 > On first start, the API automatically creates indexes on `editions.ol_id`, `works.ol_id`, and `authors.ol_id` if they don't already exist (`CREATE INDEX IF NOT EXISTS`), so `/v1/edition`, `/v1/work`, and `/v1/author` lookups are fast without a manual step. Building these on a multi-GB database can take a few minutes the first time. If you'd rather pre-build them yourself before starting the API, run:
 > ```bash
@@ -166,9 +181,6 @@ The backend is a Flask application managed with Poetry.
 > sqlite-utils create-index test.db works ol_id
 > sqlite-utils create-index test.db authors ol_id
 > ```
-
-> [!TIP]
-> If you ran `poetry run pipeline all` (and didn't pass `--skip-env`), `.env` has already been created/updated with `OL_DB` and `OLDUMP_DATE` — you can skip steps 1-3 below.
 
 ### Environment variables
 
@@ -193,19 +205,23 @@ The web frontend (`web/`) reads its own `.env`:
 | --- | --- | --- |
 | `VITE_API_URL` | *(required)* | Base URL of the API the frontend talks to (e.g. `http://localhost:5000/`). |
 
-1.  Navigate to the project root.
-2.  Copy the example environment file:
+## Updating to a New Dump
+OpenLibrary publishes new dumps periodically. To refresh an existing database with one:
+
+1.  Clear out the old dump files so the pipeline fetches the new ones instead of reusing what's on disk:
     ```bash
-    cp .env.example .env
+    rm -f data/unprocessed/ol_dump_*.txt
     ```
-3.  Edit `.env` and configure the following variables:
-    *   `OL_DB`: The path to your database file (e.g., `"test.db"`).
-    *   `OLDUMP_DATE`: The date associated with your specific dump files (e.g., `"2026-03-31"`).
-4.  Install dependencies and start the development server:
+    Alternatively, keep the old files and pass `--date YYYY-MM-DD` for the new dump. This forces a download of that date even if older files are still present in `data/unprocessed/`.
+2.  Run the pipeline again against the same `--db` you already have:
     ```bash
-    poetry install
-    poetry run flask run
+    poetry run pipeline all
     ```
+    Importing is an upsert keyed on `ol_id`, so existing rows are updated and new ones are added in place. Records removed from OpenLibrary since your last import aren't deleted from your database.
+3.  If `OVERRIDES_DB` is set, this also runs `pipeline overrides sync` automatically, flagging any override whose upstream value has since changed as `stale`. Resolve those with `pipeline overrides resolve` (see [Persistent Local Overrides](#persistent-local-overrides)).
+4.  `.env`'s `OLDUMP_DATE` is updated to match, unless you passed `--skip-env`.
+
+Restart the API afterward to pick up the refreshed database.
 
 ## Persistent Local Overrides
 
@@ -213,9 +229,9 @@ Local corrections to a record (fix a typo, add a missing ISBN, etc.) are stored 
 
 Each override remembers the upstream value it was based on. If a later dump changes that value, the override is flagged `stale` instead of silently reapplying.
 
-Changes go through a suggestion queue: anyone can `POST` a suggested correction (or a reversion to upstream data) with no login required, but it only takes effect once approved with `EDIT_TOKEN`. `EDIT_TOKEN` gates moderation (list/approve/reject) only — it does not grant a direct write path. Submissions are also rate-limited per IP and capped in size/volume. The CLI's `pipeline overrides set/...` commands are a separate, direct path for the operator (shell access to the box, not a network-reachable endpoint).
+Changes go through a suggestion queue: anyone can `POST` a suggested correction (or a reversion to upstream data) with no login required, but it only takes effect once approved with `EDIT_TOKEN`. `EDIT_TOKEN` gates moderation (list/approve/reject) only. It does not grant a direct write path. Submissions are also rate-limited per IP and capped in size/volume. The CLI's `pipeline overrides set/...` commands are a separate, direct path for the operator (shell access to the box, not a network-reachable endpoint).
 
-Only a fixed set of fields can be overridden per record type — the CLI's `overrides set` and the API's `POST .../suggest` reject anything else with an error:
+Only a fixed set of fields can be overridden per record type: the CLI's `overrides set` and the API's `POST .../suggest` reject anything else with an error:
 
 | Entity (`pipeline overrides` entity-type / suggest route) | Overridable fields |
 | --- | --- |
@@ -256,12 +272,12 @@ poetry run pipeline overrides mark-submitted works OL27448W
 poetry run pipeline overrides clear --yes
 ```
 
-`pipeline overrides sync` also runs automatically at the end of `pipeline all` — it's a no-op if `OVERRIDES_DB` isn't set.
+`pipeline overrides sync` also runs automatically at the end of `pipeline all`. It's a no-op if `OVERRIDES_DB` isn't set.
 
-`export` produces a JSON file (OL key + patched fields) for manual submission on openlibrary.org — there's no automated submission, since that requires your own OpenLibrary account.
+`export` produces a JSON file (OL key + patched fields) for manual submission on openlibrary.org. There's no automated submission, since that requires your own OpenLibrary account.
 
 ### Suggesting an edit via the API
-Set `ENABLE_SUGGESTIONS=true` in `.env` (unset by default — the routes below 404 until you do). No login required:
+Set `ENABLE_SUGGESTIONS=true` in `.env` (unset by default, so the routes below 404 until you do). No login required:
 ```bash
 # Propose a field correction
 curl -X POST http://localhost:5000/v1/work/OL27448W/suggest \
@@ -291,10 +307,10 @@ curl -X POST http://localhost:5000/v1/suggestions/42/approve -H "X-Edit-Token: y
 curl -X POST http://localhost:5000/v1/suggestions/42/reject -H "X-Edit-Token: your-token"
 # or: poetry run pipeline overrides suggestions reject 42
 ```
-`GET` requests to `/v1/work`, `/v1/author`, `/v1/edition` transparently merge any *approved* override into the response (adding an `_override_status` field when one applies) — pending or rejected suggestions never do.
+`GET` requests to `/v1/work`, `/v1/author`, `/v1/edition` transparently merge any *approved* override into the response (adding an `_override_status` field when one applies). Pending or rejected suggestions never do.
 
 > [!NOTE]
-> Search (`/v1/search`) still matches against the original, un-overridden text — an edited title won't be *findable* by its new wording until a future dump re-indexes it. Overridden fields are still merged into individual result rows, though.
+> Search (`/v1/search`) still matches against the original, un-overridden text. An edited title won't be *findable* by its new wording until a future dump re-indexes it. Overridden fields are still merged into individual result rows, though.
 
 ## Running Tests
 The `api/` Flask app, `process_data.py`, and `pipeline.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
@@ -305,7 +321,7 @@ poetry run pytest tests/ -v
 ```
 
 ## Running the Web Interface
-The frontend is a React application located in the `web` directory. It's intended for demonstrative purposes only (e.g. exercising lookups/search and the moderation flow by hand) — not a production-ready UI.
+The frontend is a React application located in the `web` directory. It's intended for demonstrative purposes only (e.g. exercising lookups/search and the moderation flow by hand), not a production-ready UI.
 
 1.  Navigate to the `web` directory.
 2.  Copy the example environment file:
