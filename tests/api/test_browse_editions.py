@@ -33,6 +33,13 @@ def test_list_editions_year_range_filter(client):
     assert titles == {"The Fellowship of the Ring", "The Two Towers: A Ring Tale"}
 
 
+def test_list_editions_subject_filter(client):
+    resp = client.get("/v1/editions?subject=Fantasy&limit=50")
+    assert resp.status_code == 200
+    titles = _titles(resp.get_json()["results"])
+    assert titles == {"The Hobbit", "The Fellowship of the Ring", "El Hobbit"}
+
+
 def test_list_editions_title_prefix_filter(client):
     resp = client.get("/v1/editions?title=ring&limit=50")
     assert resp.status_code == 200

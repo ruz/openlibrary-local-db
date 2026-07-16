@@ -14,9 +14,9 @@ export function search(query, { limit, offset, lang, sort } = {}) {
         .then((r) => r.data);
 }
 
-export function listEditions({ limit, offset, lang, format, year_min, year_max, title, include_empty, sort } = {}) {
+export function listEditions({ limit, offset, lang, format, year_min, year_max, title, subject, include_empty, sort } = {}) {
     return client
-        .get("v1/editions", { params: { limit, offset, lang, format, year_min, year_max, title, include_empty, sort } })
+        .get("v1/editions", { params: { limit, offset, lang, format, year_min, year_max, title, subject, include_empty, sort } })
         .then((r) => r.data);
 }
 

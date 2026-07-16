@@ -18,6 +18,7 @@ function resultToItem(item, i, offset) {
         isbn,
         olId: item.ol_id,
         author: item.author_names?.[0] || "Unknown Author",
+        subjects: item.subjects,
     };
 }
 
@@ -31,6 +32,7 @@ export default function BrowseEditionsPage() {
     const [yearMin, setYearMin] = useState("");
     const [yearMax, setYearMax] = useState("");
     const [title, setTitle] = useState("");
+    const [subject, setSubject] = useState("");
     const [includeEmpty, setIncludeEmpty] = useState(false);
     const [sort, setSort] = useState("title");
     const [offset, setOffset] = useState(0);
@@ -67,11 +69,12 @@ export default function BrowseEditionsPage() {
             year_min: yearMin || undefined,
             year_max: yearMax || undefined,
             title: title || undefined,
+            subject: subject || undefined,
             include_empty: includeEmpty || undefined,
             sort,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [limit, lang, format, yearMin, yearMax, title, includeEmpty, sort]);
+    }, [limit, lang, format, yearMin, yearMax, title, subject, includeEmpty, sort]);
 
     const goToPage = (newOffset) => {
         setOffset(newOffset);
@@ -83,6 +86,7 @@ export default function BrowseEditionsPage() {
             year_min: yearMin || undefined,
             year_max: yearMax || undefined,
             title: title || undefined,
+            subject: subject || undefined,
             include_empty: includeEmpty || undefined,
             sort,
         });
@@ -121,6 +125,14 @@ export default function BrowseEditionsPage() {
                         placeholder="Format (e.g. Hardcover)"
                         onChange={(e) => setFormat(e.target.value)}
                         value={format}
+                    />
+
+                    <TextInput
+                        sizing="sm"
+                        type="text"
+                        placeholder="Subject (e.g. Fiction)"
+                        onChange={(e) => setSubject(e.target.value)}
+                        value={subject}
                     />
 
                     <div className="flex items-center gap-2">
@@ -206,6 +218,9 @@ export default function BrowseEditionsPage() {
                                         </p>
                                         <p className="text-sm text-gray-700 font-medium">by {data.author}</p>
                                         <p className="text-sm text-gray-500">ISBN: {data.isbn || "N/A"}</p>
+                                        {data.subjects?.length > 0 && (
+                                            <p className="text-sm text-gray-500 truncate">{data.subjects.slice(0, 5).join(", ")}</p>
+                                        )}
                                     </Link>
                                 </div>
                             </div>

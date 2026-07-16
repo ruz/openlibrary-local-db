@@ -402,6 +402,10 @@ def list_editions():
         in: query
         type: string
         description: Case-insensitive title prefix filter.
+      - name: subject
+        in: query
+        type: string
+        description: Exact subject match (e.g., 'Fiction')
       - name: include_empty
         in: query
         type: boolean
@@ -427,12 +431,13 @@ def list_editions():
     year_min = request.args.get("year_min", type=int)
     year_max = request.args.get("year_max", type=int)
     title = request.args.get("title", type=str)
+    subject = request.args.get("subject", type=str)
     include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     sort_mode = request.args.get("sort", default="title", type=str)
 
     base_sql = """
         SELECT ol_id, title, subtitle, publish_date, publish_year, physical_format,
-               isbn_10, isbn_13, languages, author_names, works
+               isbn_10, isbn_13, subjects, languages, author_names, works
         FROM editions
         WHERE 1=1
     """
@@ -455,6 +460,9 @@ def list_editions():
     if title:
         base_sql += " AND title LIKE ? COLLATE NOCASE"
         params.append(f"{title}%")
+    if subject:
+        base_sql += " AND EXISTS (SELECT 1 FROM json_each(subjects) WHERE value = ?)"
+        params.append(subject)
 
     if sort_mode == "newest":
         base_sql += " ORDER BY publish_year DESC, rowid"
