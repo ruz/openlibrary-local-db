@@ -51,6 +51,7 @@ export default function Layout() {
                     <Dropdown
                         inline
                         arrowIcon={false}
+                        trigger="hover"
                         label={
                             <span className={`text-sm font-medium ${browseActive ? "text-blue-700" : "text-gray-600 hover:text-blue-700"}`}>
                                 Browse
