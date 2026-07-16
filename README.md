@@ -1,5 +1,12 @@
 # Database Setup and Installation Guide
 
+## Setup
+This project uses [Poetry](https://python-poetry.org/) to manage dependencies and the virtual environment. Install dependencies before running any of the commands below:
+
+```bash
+poetry install
+```
+
 ## 1. Prepare the Data
 Download the latest `editions`, `works`, and `authors` dumps from the [OpenLibrary Developer Portal](https://openlibrary.org/developers/dumps). Place the raw files into the following directory:
 
@@ -8,11 +15,41 @@ Download the latest `editions`, `works`, and `authors` dumps from the [OpenLibra
 > [!TIP]
 >For faster downloads you can use the torrents available at [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate). Ensure you select the latest ol_dump file (e.g., ol_dump_2026-04-30), not the ol_cdump version.
 
+This step is required whether you build the database using the automated pipeline below or the manual steps.
+
+## Quick Start: Automated Pipeline
+
+`pipeline.py` automates building the database (processing dumps, importing to SQLite, building the ISBN lookup table, enabling FTS, and optimizing — steps 2-7 below) in one command, and creates/updates your `.env` file so the API is ready to run immediately afterward.
+
+```bash
+poetry run pipeline all
+```
+
+Common options:
+- `--limit N` — process only N rows per dump file (for a quick smoke test; see "Testing with a smaller sample" below)
+- `--input-path`, `--output-path`, `--db` — override the default `./data/unprocessed/`, `./data/processed/`, `test.db` locations
+- `--date YYYY-MM-DD` — pin the dump date instead of auto-detecting it from filenames in `--input-path`
+- `--skip-env` — don't create/update `.env`
+
+Each stage can also be run independently, useful for re-running just one step:
+```bash
+poetry run pipeline process    # dumps -> CSVs
+poetry run pipeline import     # CSVs -> SQLite tables
+poetry run pipeline index      # isbn_lookup table + indexes
+poetry run pipeline fts        # enable full-text search
+poetry run pipeline optimize   # optimize the database
+```
+
+The manual, step-by-step instructions below describe exactly what the automated pipeline does under the hood, and remain fully supported if you prefer to run them by hand or need finer control.
+
+<details>
+<summary><strong>Manual setup (steps 2-7)</strong></summary>
+
 ## 2. Process the Dumps
 Run the processing script to clean the data and extract the necessary fields. This script scans the `unprocessed` folder and saves the formatted CSV files into the `processed` folder.
 
 ```bash
-python3 process_data.py
+poetry run python3 process_data.py
 ```
 
 **Approximate Processed File Sizes:**
@@ -25,7 +62,7 @@ The full dumps take a long time to process and import, which makes iterating on 
 
 - Limit how many rows are read from the full dump files already in `data/unprocessed/`,
   ```bash
-  python3 process_data.py --limit 5000
+  poetry run python3 process_data.py --limit 5000
   ```
 
 > [!TIP]
@@ -99,6 +136,8 @@ sqlite-utils tables test.db --counts
 sqlite-utils optimize test.db
 ```
 
+</details>
+
 ## 8. Running the API
 The backend is a Flask application managed with Poetry.
 
@@ -109,6 +148,9 @@ The backend is a Flask application managed with Poetry.
 > sqlite-utils create-index test.db works ol_id
 > sqlite-utils create-index test.db authors ol_id
 > ```
+
+> [!TIP]
+> If you ran `poetry run pipeline all` (and didn't pass `--skip-env`), `.env` has already been created/updated with `OL_DB` and `OLDUMP_DATE` — you can skip steps 1-3 below.
 
 1.  Navigate to the project root.
 2.  Copy the example environment file:
@@ -125,7 +167,7 @@ The backend is a Flask application managed with Poetry.
     ```
 
 ## 9. Running Tests
-The `api/` Flask app and `process_data.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
+The `api/` Flask app, `process_data.py`, and `pipeline.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
 
 ```bash
 poetry install

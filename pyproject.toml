@@ -14,10 +14,13 @@ Flask-Cors = "^4.0.1"
 python-dotenv = "^1.0.1"
 gunicorn = "^22.0.0"
 flasgger = "^0.9.7.1"
+sqlite-utils = "^3.36"
 
 [tool.poetry.group.dev.dependencies]
-sqlite-utils = "^3.36"
 pytest = "^9.1.1"
+
+[tool.poetry.scripts]
+pipeline = "pipeline:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

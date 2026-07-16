@@ -9,25 +9,49 @@ from datetime import date
 DEFAULT_INPUT_PATH = "./data/unprocessed/"
 DEFAULT_OUTPUT_PATH = "./data/processed/"
 
-tasks = [
+TASK_TEMPLATES = [
     {
-        "file": "ol_dump_authors_2026-06-30.txt",
         "type": "authors",
         "fields": ["ol_id", "name", "birth_date", "death_date", "alternate_names", "bio", "photos"]
     },
     {
-        "file": "ol_dump_works_2026-06-30.txt",
         "type": "works",
         "fields": ["ol_id", "title", "description", "authors", "subjects", "subject_people", "subject_places", "covers", "series"]
     },
     {
-        "file": "ol_dump_editions_2026-06-30.txt",
         "type": "editions",
         "fields": ["ol_id", "title", "subtitle", "publish_date", "publish_year", "number_of_pages",
                    "physical_format", "publishers", "isbn_10", "isbn_13",
                    "subjects", "languages", "covers", "works", "authors", "author_names"]
     }
 ]
+
+DUMP_FILENAME_RE = re.compile(r"^ol_dump_(authors|works|editions)_(\d{4}-\d{2}-\d{2})\.(\w+)$")
+
+# Populated by main() for the most recently processed dump date.
+tasks = []
+
+def detect_dump_date(path, extension="txt"):
+    """
+    Scans path for files named ol_dump_(authors|works|editions)_<date>.<extension>.
+    Returns the most recent YYYY-MM-DD date found, or None if no matches exist.
+    """
+    dates_found = set()
+    if os.path.isdir(path):
+        for fname in os.listdir(path):
+            match = DUMP_FILENAME_RE.match(fname)
+            if match and match.group(3) == extension:
+                dates_found.add(match.group(2))
+    if not dates_found:
+        return None
+    return sorted(dates_found)[-1]
+
+def build_tasks(date_str):
+    """Builds the tasks list (with resolved filenames) for a given dump date."""
+    return [
+        {**template, "file": f"ol_dump_{template['type']}_{date_str}.txt"}
+        for template in TASK_TEMPLATES
+    ]
 
 csv.field_size_limit(int(ct.c_ulong(-1).value // 2))
 
@@ -79,7 +103,7 @@ def filter_image_ids(id_list):
     """Drops OpenLibrary's -1 'no image' placeholder from photo/cover id lists."""
     return [i for i in id_list if isinstance(i, int) and i > 0]
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Process raw OpenLibrary dumps into CSV files.")
     parser.add_argument("--input-path", default=DEFAULT_INPUT_PATH,
                          help=f"Directory containing the raw dump files (default: {DEFAULT_INPUT_PATH})")
@@ -87,7 +111,19 @@ def main():
                          help=f"Directory to write processed CSV files to (default: {DEFAULT_OUTPUT_PATH})")
     parser.add_argument("--limit", type=int, default=None,
                          help="Stop after processing this many data rows per input file (useful for smoke-testing on a sample)")
-    args = parser.parse_args()
+    parser.add_argument("--date", default=None,
+                         help="OL dump date (YYYY-MM-DD) to process; auto-detected from filenames in --input-path if omitted")
+    args = parser.parse_args(argv)
+
+    date_str = args.date or detect_dump_date(args.input_path)
+    if date_str is None:
+        print("No dump files found matching ol_dump_(authors|works|editions)_YYYY-MM-DD.txt in the input path; nothing to process.")
+        return
+
+    global tasks
+    tasks = build_tasks(date_str)
+
+    os.makedirs(args.output_path, exist_ok=True)
 
     for task in tasks:
         filename = task["file"]
