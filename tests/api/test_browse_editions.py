@@ -70,3 +70,17 @@ def test_list_editions_response_json_fields_are_parsed_lists(client):
     assert isinstance(result["languages"], list)
     assert isinstance(result["isbn_10"], list)
     assert isinstance(result["isbn_13"], list)
+
+
+def test_list_editions_excludes_empty_title_by_default(client):
+    resp = client.get("/v1/editions?limit=50")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OLedE1" not in ol_ids
+
+
+def test_list_editions_include_empty_returns_blank_title_row(client):
+    resp = client.get("/v1/editions?limit=50&include_empty=true")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OLedE1" in ol_ids

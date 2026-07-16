@@ -14,21 +14,21 @@ export function search(query, { limit, offset, lang, sort } = {}) {
         .then((r) => r.data);
 }
 
-export function listEditions({ limit, offset, lang, format, year_min, year_max, title, sort } = {}) {
+export function listEditions({ limit, offset, lang, format, year_min, year_max, title, include_empty, sort } = {}) {
     return client
-        .get("v1/editions", { params: { limit, offset, lang, format, year_min, year_max, title, sort } })
+        .get("v1/editions", { params: { limit, offset, lang, format, year_min, year_max, title, include_empty, sort } })
         .then((r) => r.data);
 }
 
-export function listWorks({ limit, offset, subject, title, sort } = {}) {
+export function listWorks({ limit, offset, subject, title, include_empty, sort } = {}) {
     return client
-        .get("v1/works", { params: { limit, offset, subject, title, sort } })
+        .get("v1/works", { params: { limit, offset, subject, title, include_empty, sort } })
         .then((r) => r.data);
 }
 
-export function listAuthors({ limit, offset, name, sort } = {}) {
+export function listAuthors({ limit, offset, name, include_empty, sort } = {}) {
     return client
-        .get("v1/authors", { params: { limit, offset, name, sort } })
+        .get("v1/authors", { params: { limit, offset, name, include_empty, sort } })
         .then((r) => r.data);
 }
 

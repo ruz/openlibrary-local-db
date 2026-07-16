@@ -28,3 +28,17 @@ def test_list_authors_response_json_fields_are_parsed_lists(client):
     assert resp.status_code == 200
     result = resp.get_json()["results"][0]
     assert isinstance(result["photos"], list)
+
+
+def test_list_authors_excludes_empty_name_by_default(client):
+    resp = client.get("/v1/authors")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL3A" not in ol_ids
+
+
+def test_list_authors_include_empty_returns_blank_name_row(client):
+    resp = client.get("/v1/authors?include_empty=true")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL3A" in ol_ids

@@ -37,3 +37,31 @@ def test_list_works_response_json_fields_are_parsed_lists(client):
     assert isinstance(result["authors"], list)
     assert isinstance(result["subjects"], list)
     assert isinstance(result["covers"], list)
+
+
+def test_list_works_excludes_empty_title_by_default(client):
+    resp = client.get("/v1/works")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL12W" not in ol_ids
+
+
+def test_list_works_include_empty_returns_blank_title_row(client):
+    resp = client.get("/v1/works?include_empty=true")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL12W" in ol_ids
+
+
+def test_list_works_excludes_whitespace_only_title_by_default(client):
+    resp = client.get("/v1/works")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL13W" not in ol_ids
+
+
+def test_list_works_include_empty_returns_whitespace_only_title_row(client):
+    resp = client.get("/v1/works?include_empty=true")
+    assert resp.status_code == 200
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL13W" in ol_ids

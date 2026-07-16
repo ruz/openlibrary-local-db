@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { debounce } from "lodash";
-import { TextInput, Select, Label } from "flowbite-react";
+import { TextInput, Select, Label, Checkbox } from "flowbite-react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import { RiFilter3Line, RiSortAsc } from "react-icons/ri";
@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 import languages from "../languages.json";
 import { listEditions } from "../api/client";
 import PageNav from "../components/PageNav";
+import { isBlank } from "../utils/isBlank";
 
 function resultToItem(item, i, offset) {
     const isbn = item.isbn_13?.[0] || item.isbn_10?.[0] || null;
@@ -30,6 +31,7 @@ export default function BrowseEditionsPage() {
     const [yearMin, setYearMin] = useState("");
     const [yearMax, setYearMax] = useState("");
     const [title, setTitle] = useState("");
+    const [includeEmpty, setIncludeEmpty] = useState(false);
     const [sort, setSort] = useState("title");
     const [offset, setOffset] = useState(0);
     const [hasMore, setHasMore] = useState(false);
@@ -65,10 +67,11 @@ export default function BrowseEditionsPage() {
             year_min: yearMin || undefined,
             year_max: yearMax || undefined,
             title: title || undefined,
+            include_empty: includeEmpty || undefined,
             sort,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [limit, lang, format, yearMin, yearMax, title, sort]);
+    }, [limit, lang, format, yearMin, yearMax, title, includeEmpty, sort]);
 
     const goToPage = (newOffset) => {
         setOffset(newOffset);
@@ -80,6 +83,7 @@ export default function BrowseEditionsPage() {
             year_min: yearMin || undefined,
             year_max: yearMax || undefined,
             title: title || undefined,
+            include_empty: includeEmpty || undefined,
             sort,
         });
     };
@@ -159,6 +163,11 @@ export default function BrowseEditionsPage() {
                             <option value={50}>50</option>
                         </Select>
                     </div>
+
+                    <div className="flex items-center gap-2">
+                        <Checkbox id="include_empty" checked={includeEmpty} onChange={(e) => setIncludeEmpty(e.target.checked)} />
+                        <Label htmlFor="include_empty" value="Show untitled/incomplete records" className="text-xs text-gray-500" />
+                    </div>
                 </div>
             </div>
 
@@ -192,7 +201,9 @@ export default function BrowseEditionsPage() {
                                 </div>
                                 <div className="flex-1">
                                     <Link to={`/edition/${encodeURIComponent(data.isbn || data.olId)}`} className="group">
-                                        <p className="font-semibold text-blue-700 group-hover:underline">{data.title}</p>
+                                        <p className="font-semibold text-blue-700 group-hover:underline">
+                                            {isBlank(data.title) ? <span className="italic text-gray-400">(untitled)</span> : data.title}
+                                        </p>
                                         <p className="text-sm text-gray-700 font-medium">by {data.author}</p>
                                         <p className="text-sm text-gray-500">ISBN: {data.isbn || "N/A"}</p>
                                     </Link>

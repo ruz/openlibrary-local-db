@@ -28,6 +28,16 @@ AUTHOR_ROWS = [
         "bio": "",
         "photos": _j([]),
     },
+    # Redirect-stub-style row with no name, for include_empty coverage
+    {
+        "ol_id": "OL3A",
+        "name": "",
+        "birth_date": "",
+        "death_date": "",
+        "alternate_names": _j([]),
+        "bio": "",
+        "photos": _j([]),
+    },
 ]
 
 WORK_ROWS = [
@@ -45,6 +55,31 @@ WORK_ROWS = [
     {
         "ol_id": "OL11W",
         "title": "Empty Work",
+        "description": "",
+        "authors": _j([]),
+        "subjects": _j([]),
+        "subject_people": _j([]),
+        "subject_places": _j([]),
+        "covers": _j([]),
+        "series": _j([]),
+    },
+    # Redirect-stub-style row with no title, for include_empty coverage
+    {
+        "ol_id": "OL12W",
+        "title": "",
+        "description": "",
+        "authors": _j([]),
+        "subjects": _j([]),
+        "subject_people": _j([]),
+        "subject_places": _j([]),
+        "covers": _j([]),
+        "series": _j([]),
+    },
+    # Title that's non-empty but visually blank (whitespace/control bytes only) --
+    # real dumps have plenty of these from messy MARC-derived source records.
+    {
+        "ol_id": "OL13W",
+        "title": "\t\x1a  \n",
         "description": "",
         "authors": _j([]),
         "subjects": _j([]),
@@ -271,6 +306,25 @@ EDITION_ROWS = [
         "isbn_13": _j([]),
         "subjects": _j([]),
         "languages": _j(["eng"]),
+        "covers": _j([]),
+        "works": _j([]),
+        "authors": _j([]),
+        "author_names": _j([]),
+    },
+    # Redirect-stub-style row with no title, for include_empty coverage
+    {
+        "ol_id": "OLedE1",
+        "title": "",
+        "subtitle": "",
+        "publish_date": "",
+        "publish_year": 0,
+        "number_of_pages": 0,
+        "physical_format": "",
+        "publishers": _j([]),
+        "isbn_10": _j([]),
+        "isbn_13": _j([]),
+        "subjects": _j([]),
+        "languages": _j([]),
         "covers": _j([]),
         "works": _j([]),
         "authors": _j([]),

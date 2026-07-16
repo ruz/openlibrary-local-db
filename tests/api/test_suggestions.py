@@ -164,6 +164,23 @@ def test_approve_delete_suggestion_reverts_override(suggestions_client):
     assert "_override_status" not in data
 
 
+def test_list_works_excludes_title_blanked_by_override(suggestions_client):
+    resp = suggestions_client.post(
+        "/v1/work/OL10W/suggest", json={"action": "patch", "patch": {"title": ""}}
+    )
+    suggestion_id = resp.get_json()["id"]
+    resp = suggestions_client.post(f"/v1/suggestions/{suggestion_id}/approve", headers=TOKEN_HEADERS)
+    assert resp.status_code == 200
+
+    resp = suggestions_client.get("/v1/works")
+    ol_ids = {r["ol_id"] for r in resp.get_json()["results"]}
+    assert "OL10W" not in ol_ids
+
+    resp = suggestions_client.get("/v1/works?include_empty=true")
+    results = {r["ol_id"]: r for r in resp.get_json()["results"]}
+    assert results["OL10W"]["title"] == ""
+
+
 def test_reject_suggestion_never_applied_and_excluded_from_pending_list(suggestions_client):
     resp = suggestions_client.post(
         "/v1/work/OL10W/suggest", json={"action": "patch", "patch": {"title": "Should Not Apply"}}

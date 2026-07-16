@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { debounce } from "lodash";
-import { TextInput, Select, Label } from "flowbite-react";
+import { TextInput, Select, Label, Checkbox } from "flowbite-react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import { RiSortAsc } from "react-icons/ri";
 import { Link } from "react-router-dom";
 import { listWorks } from "../api/client";
 import PageNav from "../components/PageNav";
+import { isBlank } from "../utils/isBlank";
 
 export default function BrowseWorksPage() {
     const [results, setResults] = useState([]);
@@ -15,6 +16,7 @@ export default function BrowseWorksPage() {
     const [limit, setLimit] = useState(25);
     const [subject, setSubject] = useState("");
     const [title, setTitle] = useState("");
+    const [includeEmpty, setIncludeEmpty] = useState(false);
     const [sort, setSort] = useState("title");
     const [offset, setOffset] = useState(0);
     const [hasMore, setHasMore] = useState(false);
@@ -47,10 +49,11 @@ export default function BrowseWorksPage() {
             offset: 0,
             subject: subject || undefined,
             title: title || undefined,
+            include_empty: includeEmpty || undefined,
             sort,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [limit, subject, title, sort]);
+    }, [limit, subject, title, includeEmpty, sort]);
 
     const goToPage = (newOffset) => {
         setOffset(newOffset);
@@ -59,6 +62,7 @@ export default function BrowseWorksPage() {
             offset: newOffset,
             subject: subject || undefined,
             title: title || undefined,
+            include_empty: includeEmpty || undefined,
             sort,
         });
     };
@@ -102,6 +106,11 @@ export default function BrowseWorksPage() {
                             <option value={50}>50</option>
                         </Select>
                     </div>
+
+                    <div className="flex items-center gap-2">
+                        <Checkbox id="include_empty" checked={includeEmpty} onChange={(e) => setIncludeEmpty(e.target.checked)} />
+                        <Label htmlFor="include_empty" value="Show untitled/incomplete records" className="text-xs text-gray-500" />
+                    </div>
                 </div>
             </div>
 
@@ -120,7 +129,9 @@ export default function BrowseWorksPage() {
                     results.map((work) => (
                         <div key={work.ol_id} className="p-4 border-b last:border-0 hover:bg-gray-50 transition-colors">
                             <Link to={`/work/${encodeURIComponent(work.ol_id)}`} className="group">
-                                <p className="font-semibold text-blue-700 group-hover:underline">{work.title}</p>
+                                <p className="font-semibold text-blue-700 group-hover:underline">
+                                    {isBlank(work.title) ? <span className="italic text-gray-400">(untitled)</span> : work.title}
+                                </p>
                             </Link>
                             {work.subjects?.length > 0 && (
                                 <p className="text-sm text-gray-500 truncate">{work.subjects.slice(0, 5).join(", ")}</p>

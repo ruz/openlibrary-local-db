@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { debounce } from "lodash";
-import { TextInput, Select, Label } from "flowbite-react";
+import { TextInput, Select, Label, Checkbox } from "flowbite-react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import { RiSortAsc } from "react-icons/ri";
 import { Link } from "react-router-dom";
 import { listAuthors } from "../api/client";
 import PageNav from "../components/PageNav";
+import { isBlank } from "../utils/isBlank";
 
 export default function BrowseAuthorsPage() {
     const [results, setResults] = useState([]);
@@ -14,6 +15,7 @@ export default function BrowseAuthorsPage() {
     const [error, setError] = useState(null);
     const [limit, setLimit] = useState(25);
     const [name, setName] = useState("");
+    const [includeEmpty, setIncludeEmpty] = useState(false);
     const [sort, setSort] = useState("name");
     const [offset, setOffset] = useState(0);
     const [hasMore, setHasMore] = useState(false);
@@ -41,13 +43,13 @@ export default function BrowseAuthorsPage() {
 
     useEffect(() => {
         setOffset(0);
-        debouncedFetch({ limit, offset: 0, name: name || undefined, sort });
+        debouncedFetch({ limit, offset: 0, name: name || undefined, include_empty: includeEmpty || undefined, sort });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [limit, name, sort]);
+    }, [limit, name, includeEmpty, sort]);
 
     const goToPage = (newOffset) => {
         setOffset(newOffset);
-        runFetch({ limit, offset: newOffset, name: name || undefined, sort });
+        runFetch({ limit, offset: newOffset, name: name || undefined, include_empty: includeEmpty || undefined, sort });
     };
 
     return (
@@ -81,6 +83,11 @@ export default function BrowseAuthorsPage() {
                             <option value={50}>50</option>
                         </Select>
                     </div>
+
+                    <div className="flex items-center gap-2">
+                        <Checkbox id="include_empty" checked={includeEmpty} onChange={(e) => setIncludeEmpty(e.target.checked)} />
+                        <Label htmlFor="include_empty" value="Show unnamed/incomplete records" className="text-xs text-gray-500" />
+                    </div>
                 </div>
             </div>
 
@@ -99,7 +106,9 @@ export default function BrowseAuthorsPage() {
                     results.map((author) => (
                         <div key={author.ol_id} className="p-4 border-b last:border-0 hover:bg-gray-50 transition-colors">
                             <Link to={`/author/${encodeURIComponent(author.ol_id)}`} className="group">
-                                <p className="font-semibold text-blue-700 group-hover:underline">{author.name}</p>
+                                <p className="font-semibold text-blue-700 group-hover:underline">
+                                    {isBlank(author.name) ? <span className="italic text-gray-400">(unnamed)</span> : author.name}
+                                </p>
                             </Link>
                             {(author.birth_date || author.death_date) && (
                                 <p className="text-sm text-gray-500">

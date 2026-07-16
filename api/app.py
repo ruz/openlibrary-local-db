@@ -8,6 +8,7 @@ import os
 import hashlib
 from flasgger import Swagger
 import json
+import re
 from functools import wraps
 
 import overrides
@@ -36,6 +37,15 @@ def parse_json_fields(row, fields):
             except json.JSONDecodeError:
                 row[field] = []
     return row
+
+# Some source records have a title/name that's non-empty but visually blank --
+# whitespace, or C0/DEL control bytes left over from messy MARC-derived data
+# (tabs, newlines, stray \x1a, etc). A plain `!= ''` check misses these.
+_BLANK_CHARS_RE = re.compile(r"[\s\x00-\x1f\x7f]+")
+
+
+def is_blank(value):
+    return _BLANK_CHARS_RE.sub("", value or "") == ""
 
 SEARCH_JSON_FIELDS = ("author_names", "languages", "isbn_13", "isbn_10")
 EDITION_JSON_FIELDS = ("publishers", "isbn_10", "isbn_13", "subjects", "languages", "authors", "author_names", "works")
@@ -218,6 +228,7 @@ def get_db_connection():
     conn.execute("PRAGMA mmap_size=31000000000;")
     conn.execute("PRAGMA cache_size=-2000000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.create_function("is_blank", 1, is_blank, deterministic=True)
 
     for table, column in (("editions", "ol_id"), ("works", "ol_id"), ("authors", "ol_id")):
         try:
@@ -391,6 +402,13 @@ def list_editions():
         in: query
         type: string
         description: Case-insensitive title prefix filter.
+      - name: include_empty
+        in: query
+        type: boolean
+        default: false
+        description: >
+          Include editions with no title (redirect stubs, deleted/merged, or
+          otherwise incomplete source records). Excluded by default.
       - name: sort
         in: query
         type: string
@@ -409,6 +427,7 @@ def list_editions():
     year_min = request.args.get("year_min", type=int)
     year_max = request.args.get("year_max", type=int)
     title = request.args.get("title", type=str)
+    include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     sort_mode = request.args.get("sort", default="title", type=str)
 
     base_sql = """
@@ -419,6 +438,8 @@ def list_editions():
     """
     params = []
 
+    if not include_empty:
+        base_sql += " AND NOT is_blank(title)"
     if lang:
         base_sql += " AND EXISTS (SELECT 1 FROM json_each(languages) WHERE value = ?)"
         params.append(lang)
@@ -457,6 +478,11 @@ def list_editions():
     for row in results:
         parse_json_fields(row, EDITION_JSON_FIELDS)
         apply_override(row, "editions", row["ol_id"])
+
+    if not include_empty:
+        # An override can blank out a title that was non-empty in the base
+        # row, so the SQL-level filter above can't catch it alone.
+        results = [row for row in results if not is_blank(row["title"])]
 
     return jsonify({
         "results": results,
@@ -588,6 +614,13 @@ def list_works():
         in: query
         type: string
         description: Case-insensitive title prefix filter.
+      - name: include_empty
+        in: query
+        type: boolean
+        default: false
+        description: >
+          Include works with no title (redirect stubs, deleted/merged, or
+          otherwise incomplete source records). Excluded by default.
       - name: sort
         in: query
         type: string
@@ -603,6 +636,7 @@ def list_works():
 
     subject = request.args.get("subject", type=str)
     title = request.args.get("title", type=str)
+    include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     sort_mode = request.args.get("sort", default="title", type=str)
 
     base_sql = """
@@ -612,6 +646,8 @@ def list_works():
     """
     params = []
 
+    if not include_empty:
+        base_sql += " AND NOT is_blank(title)"
     if subject:
         base_sql += " AND EXISTS (SELECT 1 FROM json_each(subjects) WHERE value = ?)"
         params.append(subject)
@@ -637,6 +673,11 @@ def list_works():
     for row in results:
         parse_json_fields(row, WORK_JSON_FIELDS)
         apply_override(row, "works", row["ol_id"])
+
+    if not include_empty:
+        # An override can blank out a title that was non-empty in the base
+        # row, so the SQL-level filter above can't catch it alone.
+        results = [row for row in results if not is_blank(row["title"])]
 
     return jsonify({
         "results": results,
@@ -822,6 +863,13 @@ def list_authors():
         in: query
         type: string
         description: Case-insensitive name prefix filter.
+      - name: include_empty
+        in: query
+        type: boolean
+        default: false
+        description: >
+          Include authors with no name (redirect stubs, deleted/merged, or
+          otherwise incomplete source records). Excluded by default.
       - name: sort
         in: query
         type: string
@@ -836,6 +884,7 @@ def list_authors():
     limit, offset = _paginate_params()
 
     name = request.args.get("name", type=str)
+    include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     sort_mode = request.args.get("sort", default="name", type=str)
 
     base_sql = """
@@ -845,6 +894,8 @@ def list_authors():
     """
     params = []
 
+    if not include_empty:
+        base_sql += " AND NOT is_blank(name)"
     if name:
         base_sql += " AND name LIKE ? COLLATE NOCASE"
         params.append(f"{name}%")
@@ -867,6 +918,11 @@ def list_authors():
     for row in results:
         parse_json_fields(row, AUTHOR_JSON_FIELDS)
         apply_override(row, "authors", row["ol_id"])
+
+    if not include_empty:
+        # An override can blank out a name that was non-empty in the base
+        # row, so the SQL-level filter above can't catch it alone.
+        results = [row for row in results if not is_blank(row["name"])]
 
     return jsonify({
         "results": results,
