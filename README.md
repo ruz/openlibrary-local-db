@@ -1,4 +1,17 @@
-# Database Setup and Installation Guide
+# OpenLibrary Local DB
+
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
+![Flask](https://img.shields.io/badge/backend-Flask-black.svg)
+![SQLite](https://img.shields.io/badge/database-SQLite-003B57.svg)
+![Poetry](https://img.shields.io/badge/managed%20with-Poetry-60A5FA.svg)
+
+This project converts the [OpenLibrary](https://openlibrary.org/) data dumps (editions, works, authors) into a single indexed, full-text-searchable SQLite database, and exposes it through a Flask API for ISBN/OL-ID lookups and search.
+
+It consists of:
+- **A pipeline** (`pipeline.py` / `process_data.py`) that processes raw OpenLibrary dumps into a compact SQLite database with an ISBN lookup table, indexes, and FTS enabled.
+- **An API** (`api/`, Flask) that serves lookups by ISBN or OpenLibrary ID, and paginated full-text search, with HTTP caching (ETag/Last-Modified/Cache-Control).
+
+The official hosted instance of this projects is available at [metadata.booklogr.app](https://metadata.booklogr.app).
 
 ## Setup
 This project uses [Poetry](https://python-poetry.org/) to manage dependencies and the virtual environment. Install dependencies before running any of the commands below:
