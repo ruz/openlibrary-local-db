@@ -1,11 +1,16 @@
 from flask import Flask, request, jsonify, render_template, make_response
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import sqlite3
 from dotenv import load_dotenv
 import os
+import hashlib
 from flasgger import Swagger
 import json
 from functools import wraps
+
+import overrides
 
 load_dotenv()
 
@@ -37,8 +42,108 @@ EDITION_JSON_FIELDS = ("publishers", "isbn_10", "isbn_13", "subjects", "language
 WORK_JSON_FIELDS = ("authors", "subjects", "subject_people", "subject_places", "covers", "series")
 AUTHOR_JSON_FIELDS = ("alternate_names", "photos")
 
+# Patchable columns per entity (everything selectable except the ol_id key itself).
+EDITION_PATCHABLE_FIELDS = (
+    "title", "subtitle", "publish_date", "publish_year", "number_of_pages", "physical_format",
+    "publishers", "isbn_10", "isbn_13", "subjects", "languages", "authors", "author_names", "works",
+)
+WORK_PATCHABLE_FIELDS = (
+    "title", "description", "authors", "subjects", "subject_people", "subject_places", "covers", "series",
+)
+AUTHOR_PATCHABLE_FIELDS = ("name", "birth_date", "death_date", "bio", "alternate_names", "photos")
+
 MAX_SEARCH_LIMIT = int(os.getenv("MAX_SEARCH_LIMIT", 100))
 CACHE_MAX_AGE = int(os.getenv("CACHE_MAX_AGE", 3600))
+
+EDIT_TOKEN = os.getenv("EDIT_TOKEN")
+ENABLE_SUGGESTIONS = os.getenv("ENABLE_SUGGESTIONS", "").lower() in ("1", "true", "yes")
+SUGGESTION_RATE_LIMIT = os.getenv("SUGGESTION_RATE_LIMIT", "5 per hour")
+overrides_con = overrides.get_overrides_db()
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
+    default_limits=[],
+)
+
+
+def require_edit_token(view):
+    """Gates the moderation surface (list/approve/reject suggestions) only --
+    there is no longer a direct trusted-write path over HTTP; every change
+    goes through the suggestion queue."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not EDIT_TOKEN or request.headers.get("X-Edit-Token") != EDIT_TOKEN:
+            return jsonify({"message": "Not found"}), 404
+        if overrides_con is None:
+            return jsonify({"error": "OVERRIDES_DB is not configured"}), 503
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def require_suggestions_enabled(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not ENABLE_SUGGESTIONS or overrides_con is None:
+            return jsonify({"message": "Not found"}), 404
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def apply_override(result, entity_type, ol_id):
+    """Merge a stored override onto an API result dict, in place. No-op if
+    the overrides feature is disabled or no override exists for this record."""
+    if overrides_con is None:
+        return result
+    row = overrides.get_override(overrides_con, entity_type, ol_id)
+    if row is None:
+        return result
+    result.update(json.loads(row["patch"]))
+    result["_override_status"] = row["status"]
+    return result
+
+
+ENTITY_JSON_FIELDS = {"editions": EDITION_JSON_FIELDS, "works": WORK_JSON_FIELDS, "authors": AUTHOR_JSON_FIELDS}
+
+
+def _submitter_hash():
+    return hashlib.sha256((request.remote_addr or "").encode()).hexdigest()
+
+
+def _create_entity_suggestion(entity_type, ol_id, patchable_fields):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+
+    action = body.get("action", "patch")
+    patch = body.get("patch") or {}
+    note = body.get("note")
+
+    if action == "patch":
+        if not isinstance(patch, dict) or not patch:
+            return jsonify({"error": "'patch' suggestions require a non-empty 'patch' object"}), 400
+        unknown = set(patch) - set(patchable_fields)
+        if unknown:
+            return jsonify({"error": f"Unknown field(s): {sorted(unknown)}"}), 400
+    elif action == "delete":
+        patch = {}
+    else:
+        return jsonify({"error": f"Unknown action: {action!r}"}), 400
+
+    cur = con.cursor()
+    base_row = cur.execute(f"SELECT 1 FROM {entity_type} WHERE ol_id = ?", (ol_id,)).fetchone()
+    if base_row is None:
+        return jsonify({"message": f"{ol_id} not found"}), 404
+
+    try:
+        suggestion = overrides.create_suggestion(
+            overrides_con, entity_type, ol_id, action, patch, note, _submitter_hash()
+        )
+    except overrides.SuggestionError as e:
+        return jsonify({"error": str(e)}), e.status_code
+
+    return jsonify({"id": suggestion["id"], "status": suggestion["status"]}), 201
 
 def get_db_cache_metadata():
     """
@@ -210,6 +315,25 @@ def search(query):
     })
 
 
+def resolve_edition_ol_id(identifier):
+    """Resolve an edition identifier (OL id or ISBN) to a canonical ol_id, or
+    None if it can't be resolved (caller returns 404)."""
+    if identifier.startswith("OL"):
+        return identifier
+
+    # It's an ISBN. Query ONLY the small lookup table.
+    # This uses the B-Tree index on 'isbn' instantly.
+    cur = con.cursor()
+    row = cur.execute(
+        "SELECT ol_id FROM isbn_lookup WHERE isbn = ? LIMIT 1",
+        (identifier,)
+    ).fetchone()
+    if row:
+        # Handle both tuple and dict row-factory outputs safely
+        return row["ol_id"] if isinstance(row, dict) else row[0]
+    return None
+
+
 @app.route("/v1/edition/<identifier>")
 @cache_headers
 def get_edition(identifier):
@@ -231,25 +355,11 @@ def get_edition(identifier):
     """
     cur = con.cursor()
 
-    target_ol_id = None
-
-    if identifier.startswith("OL"):
-        target_ol_id = identifier
-    else:
-        # It's an ISBN. Query ONLY the small lookup table.
-        # This uses the B-Tree index on 'isbn' instantly.
-        row = cur.execute(
-            "SELECT ol_id FROM isbn_lookup WHERE isbn = ? LIMIT 1", 
-            (identifier,)
-        ).fetchone()
-        
-        if row:
-            # Handle both tuple and dict row-factory outputs safely
-            target_ol_id = row["ol_id"] if isinstance(row, dict) else row[0]
-        else:
-            # If it's not found in the index, we stop immediately. 
-            # Total time elapsed: <1ms. No full table scan!
-            return jsonify({"message": f"Edition {identifier} not found"}), 404
+    target_ol_id = resolve_edition_ol_id(identifier)
+    if target_ol_id is None:
+        # If it's not found in the index, we stop immediately.
+        # Total time elapsed: <1ms. No full table scan!
+        return jsonify({"message": f"Edition {identifier} not found"}), 404
 
     sql = """
         SELECT 
@@ -270,9 +380,50 @@ def get_edition(identifier):
     result = cur.execute(sql, (target_ol_id,)).fetchone()
     if result:
         parse_json_fields(result, EDITION_JSON_FIELDS)
+        apply_override(result, "editions", target_ol_id)
         return jsonify(result)
 
     return jsonify({"message": f"Edition {identifier} not found"}), 404
+
+
+@app.route("/v1/edition/<identifier>/suggest", methods=["POST"])
+@require_suggestions_enabled
+@limiter.limit(SUGGESTION_RATE_LIMIT)
+def suggest_edition(identifier):
+    """
+    Suggest a correction (or a reversion to upstream data) for an edition.
+    No authentication required; rate limited. Suggestions are queued for
+    operator review and never affect served data until approved.
+    ---
+    parameters:
+      - name: identifier
+        in: path
+        type: string
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          description: >
+            {"action": "patch", "patch": {field: value, ...}, "note": "..."} to
+            propose field changes, or {"action": "delete", "note": "..."} to
+            propose reverting the record to plain upstream data.
+    responses:
+      201:
+        description: Suggestion queued for review.
+      400:
+        description: Unknown field(s), bad action, or oversized payload.
+      404:
+        description: Edition not found, or suggestions are not enabled.
+      429:
+        description: Rate limited, or too many pending suggestions for this record.
+    """
+    target_ol_id = resolve_edition_ol_id(identifier)
+    if target_ol_id is None:
+        return jsonify({"message": f"Edition {identifier} not found"}), 404
+    return _create_entity_suggestion("editions", target_ol_id, EDITION_PATCHABLE_FIELDS)
+
 
 @app.route("/v1/work/<ol_id>")
 @cache_headers
@@ -303,8 +454,46 @@ def get_work(ol_id):
 
     if result:
         parse_json_fields(result, WORK_JSON_FIELDS)
+        apply_override(result, "works", clean_id)
         return jsonify(result)
     return jsonify({"message": f"Work {ol_id} not found"}), 404
+
+
+@app.route("/v1/work/<ol_id>/suggest", methods=["POST"])
+@require_suggestions_enabled
+@limiter.limit(SUGGESTION_RATE_LIMIT)
+def suggest_work(ol_id):
+    """
+    Suggest a correction (or a reversion to upstream data) for a work.
+    No authentication required; rate limited. Suggestions are queued for
+    operator review and never affect served data until approved.
+    ---
+    parameters:
+      - name: ol_id
+        in: path
+        type: string
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          description: >
+            {"action": "patch", "patch": {field: value, ...}, "note": "..."} to
+            propose field changes, or {"action": "delete", "note": "..."} to
+            propose reverting the record to plain upstream data.
+    responses:
+      201:
+        description: Suggestion queued for review.
+      400:
+        description: Unknown field(s), bad action, or oversized payload.
+      404:
+        description: Work not found, or suggestions are not enabled.
+      429:
+        description: Rate limited, or too many pending suggestions for this record.
+    """
+    clean_id = ol_id.replace("/works/", "")
+    return _create_entity_suggestion("works", clean_id, WORK_PATCHABLE_FIELDS)
 
 
 @app.route("/v1/author/<ol_id>")
@@ -336,8 +525,134 @@ def get_author(ol_id):
 
     if result:
         parse_json_fields(result, AUTHOR_JSON_FIELDS)
+        apply_override(result, "authors", clean_id)
         return jsonify(result)
     return jsonify({"message": f"Author {ol_id} not found"}), 404
+
+
+@app.route("/v1/author/<ol_id>/suggest", methods=["POST"])
+@require_suggestions_enabled
+@limiter.limit(SUGGESTION_RATE_LIMIT)
+def suggest_author(ol_id):
+    """
+    Suggest a correction (or a reversion to upstream data) for an author.
+    No authentication required; rate limited. Suggestions are queued for
+    operator review and never affect served data until approved.
+    ---
+    parameters:
+      - name: ol_id
+        in: path
+        type: string
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          description: >
+            {"action": "patch", "patch": {field: value, ...}, "note": "..."} to
+            propose field changes, or {"action": "delete", "note": "..."} to
+            propose reverting the record to plain upstream data.
+    responses:
+      201:
+        description: Suggestion queued for review.
+      400:
+        description: Unknown field(s), bad action, or oversized payload.
+      404:
+        description: Author not found, or suggestions are not enabled.
+      429:
+        description: Rate limited, or too many pending suggestions for this record.
+    """
+    clean_id = ol_id.replace("/authors/", "")
+    return _create_entity_suggestion("authors", clean_id, AUTHOR_PATCHABLE_FIELDS)
+
+
+@app.route("/v1/suggestions")
+@require_edit_token
+def list_suggestions_route():
+    """
+    List stored suggestions (moderation surface). Requires X-Edit-Token.
+    ---
+    parameters:
+      - name: status
+        in: query
+        type: string
+        enum: [pending, approved, rejected]
+      - name: entity_type
+        in: query
+        type: string
+        enum: [authors, works, editions]
+    responses:
+      200:
+        description: List of suggestions.
+    """
+    status = request.args.get("status")
+    entity_type = request.args.get("entity_type")
+    rows = overrides.list_suggestions(overrides_con, status=status, entity_type=entity_type)
+    for row in rows:
+        row["patch"] = json.loads(row["patch"])
+    return jsonify({"suggestions": rows})
+
+
+@app.route("/v1/suggestions/<int:suggestion_id>/approve", methods=["POST"])
+@require_edit_token
+def approve_suggestion_route(suggestion_id):
+    """
+    Approve a pending suggestion, promoting it into a real override.
+    Requires X-Edit-Token.
+    ---
+    parameters:
+      - name: suggestion_id
+        in: path
+        type: integer
+        required: true
+    responses:
+      200:
+        description: Suggestion approved.
+      404:
+        description: No pending suggestion with this id.
+    """
+    suggestion = overrides.get_suggestion(overrides_con, suggestion_id)
+    if suggestion is None or suggestion["status"] != "pending":
+        return jsonify({"message": "No pending suggestion found"}), 404
+
+    base_row = None
+    if suggestion["action"] == "patch":
+        cur = con.cursor()
+        base_row = cur.execute(
+            f"SELECT * FROM {suggestion['entity_type']} WHERE ol_id = ?", (suggestion["ol_id"],)
+        ).fetchone()
+        if base_row is None:
+            return jsonify({"message": f"{suggestion['ol_id']} no longer exists in the base DB"}), 404
+
+    dump_date = os.getenv("OLDUMP_DATE") or ""
+    result = overrides.approve_suggestion(overrides_con, suggestion_id, base_row, dump_date)
+    result["patch"] = json.loads(result["patch"])
+    return jsonify(result)
+
+
+@app.route("/v1/suggestions/<int:suggestion_id>/reject", methods=["POST"])
+@require_edit_token
+def reject_suggestion_route(suggestion_id):
+    """
+    Reject a pending suggestion. Requires X-Edit-Token.
+    ---
+    parameters:
+      - name: suggestion_id
+        in: path
+        type: integer
+        required: true
+    responses:
+      200:
+        description: Suggestion rejected.
+      404:
+        description: No pending suggestion with this id.
+    """
+    rejected = overrides.reject_suggestion(overrides_con, suggestion_id)
+    if not rejected:
+        return jsonify({"message": "No pending suggestion found"}), 404
+    return jsonify({"id": suggestion_id, "status": "rejected"})
+
 
 @app.route("/v1/info")
 def info():
@@ -352,7 +667,9 @@ def info():
         "name": "openlibrary-local-db-api",
         "version": "1.0.0",
         "docs": request.host_url + "api/docs",
-        "oldump_date": os.getenv("OLDUMP_DATE")
+        "oldump_date": os.getenv("OLDUMP_DATE"),
+        "overrides_enabled": overrides_con is not None,
+        "suggestions_enabled": ENABLE_SUGGESTIONS and overrides_con is not None,
     }
 
 @app.route("/")

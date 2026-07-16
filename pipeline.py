@@ -3,10 +3,14 @@ import csv
 import os
 import shutil
 
+from dotenv import load_dotenv
 import sqlite_utils
 
 import download_data
+import overrides
 import process_data
+
+load_dotenv()
 
 DEFAULT_INPUT_PATH = "./data/unprocessed/"
 DEFAULT_OUTPUT_PATH = "./data/processed/"
@@ -62,6 +66,15 @@ def run_process(args, date_str=None):
     return date_str
 
 
+def _dedupe_by_ol_id(db, table):
+    """Collapse pre-existing duplicate ol_id rows (from the old insert_all-based
+    import) so upsert_all's implicit unique index on ol_id can be created."""
+    db.execute(
+        f"DELETE FROM {table} WHERE rowid NOT IN "
+        f"(SELECT MIN(rowid) FROM {table} GROUP BY ol_id)"
+    )
+
+
 def run_import(args, date_str=None):
     date_str = date_str or resolve_csv_date(args)
     if date_str is None:
@@ -74,9 +87,11 @@ def run_import(args, date_str=None):
         if not os.path.exists(csv_path):
             print(f"Skipping {table} import: {csv_path} not found.")
             continue
+        if table in db.table_names() and "ol_id" not in db[table].pks:
+            _dedupe_by_ol_id(db, table)
         with open(csv_path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f, delimiter=";", quotechar="|")
-            db[table].insert_all(reader, batch_size=IMPORT_BATCH_SIZE, alter=True)
+            db[table].upsert_all(reader, pk="ol_id", batch_size=IMPORT_BATCH_SIZE, alter=True)
         print(f"Imported {table} into {args.db}.")
     return date_str
 
@@ -86,7 +101,7 @@ def run_index(args):
     db.executescript(ISBN_LOOKUP_SQL)
     db["isbn_lookup"].create_index(["isbn"], unique=True, if_not_exists=True)
     for table in TABLE_TYPES:
-        if table in db.table_names():
+        if table in db.table_names() and "ol_id" not in db[table].pks:
             db[table].create_index(["ol_id"], if_not_exists=True)
     print("Built isbn_lookup table and ol_id indexes.")
 
@@ -160,6 +175,7 @@ def run_all(args):
 
     run_process(args, date_str=date_str)
     run_import(args, date_str=date_str)
+    run_overrides_sync(args)
     run_index(args)
     run_fts(args)
     run_optimize(args)
@@ -168,6 +184,153 @@ def run_all(args):
         update_env_file(args.db, date_str)
 
     print("Pipeline complete.")
+
+
+def _require_overrides_db(args):
+    ov_conn = overrides.get_overrides_db(args.overrides_db)
+    if ov_conn is None:
+        raise SystemExit("OVERRIDES_DB is not set; pass --overrides-db or set the OVERRIDES_DB env var.")
+    return ov_conn
+
+
+def run_overrides_list(args):
+    ov_conn = _require_overrides_db(args)
+    rows = overrides.list_overrides(ov_conn, status=args.status, entity_type=args.entity_type)
+    if not rows:
+        print("No overrides found.")
+        return
+    for row in rows:
+        print(f"{row['entity_type']}/{row['ol_id']} [{row['status']}] patch={row['patch']}")
+
+
+def run_overrides_set(args):
+    ov_conn = _require_overrides_db(args)
+    db = sqlite_utils.Database(args.db)
+    if args.entity_type not in db.table_names():
+        raise SystemExit(f"Table '{args.entity_type}' not found in {args.db}.")
+    rows = list(db[args.entity_type].rows_where("ol_id = ?", [args.ol_id]))
+    if not rows:
+        raise SystemExit(f"No {args.entity_type} record found with ol_id={args.ol_id!r} in {args.db}.")
+    base_row = rows[0]
+    patch = {}
+    for field_kv in args.field:
+        key, _, value = field_kv.partition("=")
+        patch[key] = value
+    dump_date = args.date or os.getenv("OLDUMP_DATE") or ""
+    overrides.set_override(ov_conn, args.entity_type, args.ol_id, patch, base_row, dump_date, note=args.note)
+    print(f"Set override for {args.entity_type}/{args.ol_id}: {patch}")
+
+
+def run_overrides_discard(args):
+    ov_conn = _require_overrides_db(args)
+    removed = overrides.discard_override(ov_conn, args.entity_type, args.ol_id)
+    print("Discarded." if removed else "No override found.")
+
+
+def run_overrides_sync(args):
+    ov_conn = overrides.get_overrides_db(args.overrides_db)
+    if ov_conn is None:
+        return
+    result = overrides.sync_overrides(ov_conn, args.db)
+    print(f"Overrides sync complete: {result['stale']} stale, {result['orphaned']} orphaned.")
+
+
+def run_overrides_resolve(args):
+    ov_conn = _require_overrides_db(args)
+    if args.keep_mine:
+        action = "keep-mine"
+    elif args.accept_upstream:
+        action = "accept-upstream"
+    else:
+        action = "discard"
+    changed = overrides.resolve_override(ov_conn, args.entity_type, args.ol_id, action)
+    print("Resolved." if changed else "No override found.")
+
+
+def run_overrides_export(args):
+    ov_conn = _require_overrides_db(args)
+    count = overrides.export_overrides(ov_conn, args.output, status=args.status)
+    print(f"Exported {count} override(s) to {args.output}.")
+
+
+def run_overrides_mark_submitted(args):
+    ov_conn = _require_overrides_db(args)
+    changed = overrides.mark_submitted(ov_conn, args.entity_type, args.ol_id)
+    print("Marked submitted." if changed else "No override found.")
+
+
+def run_overrides_clear(args):
+    if not args.yes:
+        raise SystemExit("Refusing to clear overrides without --yes.")
+    ov_conn = _require_overrides_db(args)
+    overrides.clear_overrides(ov_conn)
+    print("Cleared all overrides.")
+
+
+def run_overrides_suggestions_list(args):
+    ov_conn = _require_overrides_db(args)
+    rows = overrides.list_suggestions(ov_conn, status=args.status, entity_type=args.entity_type)
+    if not rows:
+        print("No suggestions found.")
+        return
+    for row in rows:
+        print(
+            f"#{row['id']} {row['entity_type']}/{row['ol_id']} [{row['status']}] "
+            f"action={row['action']} patch={row['patch']} note={row['note']!r}"
+        )
+
+
+def run_overrides_suggestions_approve(args):
+    ov_conn = _require_overrides_db(args)
+    suggestion = overrides.get_suggestion(ov_conn, args.suggestion_id)
+    if suggestion is None or suggestion["status"] != "pending":
+        raise SystemExit(f"No pending suggestion with id={args.suggestion_id}.")
+
+    base_row = None
+    if suggestion["action"] == "patch":
+        db = sqlite_utils.Database(args.db)
+        rows = list(db[suggestion["entity_type"]].rows_where("ol_id = ?", [suggestion["ol_id"]]))
+        if not rows:
+            raise SystemExit(f"{suggestion['ol_id']} no longer exists in {args.db}; cannot approve.")
+        base_row = rows[0]
+
+    dump_date = args.date or os.getenv("OLDUMP_DATE") or ""
+    overrides.approve_suggestion(ov_conn, args.suggestion_id, base_row, dump_date)
+    print(f"Approved suggestion #{args.suggestion_id}.")
+
+
+def run_overrides_suggestions_reject(args):
+    ov_conn = _require_overrides_db(args)
+    rejected = overrides.reject_suggestion(ov_conn, args.suggestion_id)
+    print(f"Rejected suggestion #{args.suggestion_id}." if rejected else "No pending suggestion found.")
+
+
+SUGGESTIONS_HANDLERS = {
+    "list": run_overrides_suggestions_list,
+    "approve": run_overrides_suggestions_approve,
+    "reject": run_overrides_suggestions_reject,
+}
+
+
+def run_overrides_suggestions(args):
+    SUGGESTIONS_HANDLERS[args.suggestions_command](args)
+
+
+OVERRIDES_HANDLERS = {
+    "list": run_overrides_list,
+    "set": run_overrides_set,
+    "discard": run_overrides_discard,
+    "sync": run_overrides_sync,
+    "resolve": run_overrides_resolve,
+    "export": run_overrides_export,
+    "mark-submitted": run_overrides_mark_submitted,
+    "clear": run_overrides_clear,
+    "suggestions": run_overrides_suggestions,
+}
+
+
+def run_overrides(args):
+    OVERRIDES_HANDLERS[args.overrides_command](args)
 
 
 STEP_HANDLERS = {
@@ -202,6 +365,9 @@ def build_parser():
     common.add_argument("--skip-download", action="store_true",
                          help="Don't download dump files when running 'all'; use files already "
                               "present in --input-path (only used by all)")
+    common.add_argument("--overrides-db", default=os.getenv("OVERRIDES_DB"),
+                         help="Path to the overrides SQLite database (default: OVERRIDES_DB env var; "
+                              "leave unset to keep the overrides feature disabled)")
 
     parser = argparse.ArgumentParser(description="Automate the OpenLibrary DB build pipeline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -216,13 +382,77 @@ def build_parser():
     subparsers.add_parser("all", parents=[common],
                            help="Run the full pipeline end-to-end (download, process, import, index, fts, optimize).")
 
+    overrides_parser = subparsers.add_parser(
+        "overrides", parents=[common],
+        help="Manage persistent local corrections to imported records (opt-in; requires --overrides-db).",
+    )
+    overrides_sub = overrides_parser.add_subparsers(dest="overrides_command", required=True)
+
+    list_p = overrides_sub.add_parser("list", help="List stored overrides.")
+    list_p.add_argument("--status", default=None,
+                         choices=["active", "stale", "orphaned", "submitted"])
+    list_p.add_argument("--entity-type", default=None, choices=overrides.ENTITY_TYPES)
+
+    set_p = overrides_sub.add_parser("set", help="Create or update an override for a record.")
+    set_p.add_argument("entity_type", choices=overrides.ENTITY_TYPES)
+    set_p.add_argument("ol_id")
+    set_p.add_argument("--field", action="append", required=True, metavar="KEY=VALUE",
+                        help="Field to override, e.g. --field title='Fixed Title'. May be repeated.")
+    set_p.add_argument("--note", default=None)
+
+    discard_p = overrides_sub.add_parser("discard", help="Remove a single override.")
+    discard_p.add_argument("entity_type", choices=overrides.ENTITY_TYPES)
+    discard_p.add_argument("ol_id")
+
+    overrides_sub.add_parser("sync", help="Re-check active overrides against the current base DB for drift.")
+
+    resolve_p = overrides_sub.add_parser("resolve", help="Reconcile a stale or orphaned override.")
+    resolve_p.add_argument("entity_type", choices=overrides.ENTITY_TYPES)
+    resolve_p.add_argument("ol_id")
+    resolve_group = resolve_p.add_mutually_exclusive_group(required=True)
+    resolve_group.add_argument("--keep-mine", action="store_true", help="Keep my edit as-is.")
+    resolve_group.add_argument("--accept-upstream", action="store_true",
+                                help="Defer to OpenLibrary's new value; drops the override.")
+    resolve_group.add_argument("--discard", action="store_true", help="Abandon the correction entirely.")
+
+    export_p = overrides_sub.add_parser(
+        "export", help="Export overrides as JSON for manual submission to OpenLibrary.")
+    export_p.add_argument("--status", default="active")
+    export_p.add_argument("--output", required=True)
+
+    mark_p = overrides_sub.add_parser("mark-submitted", help="Flag an override as already submitted upstream.")
+    mark_p.add_argument("entity_type", choices=overrides.ENTITY_TYPES)
+    mark_p.add_argument("ol_id")
+
+    clear_p = overrides_sub.add_parser("clear", help="Delete all stored overrides.")
+    clear_p.add_argument("--yes", action="store_true", help="Confirm the destructive clear.")
+
+    suggestions_parser = overrides_sub.add_parser(
+        "suggestions", help="Moderate suggestions submitted anonymously via the API.")
+    suggestions_sub = suggestions_parser.add_subparsers(dest="suggestions_command", required=True)
+
+    suggestions_list_p = suggestions_sub.add_parser("list", help="List stored suggestions.")
+    suggestions_list_p.add_argument("--status", default=None,
+                                     choices=["pending", "approved", "rejected"])
+    suggestions_list_p.add_argument("--entity-type", default=None, choices=overrides.ENTITY_TYPES)
+
+    suggestions_approve_p = suggestions_sub.add_parser(
+        "approve", help="Approve a pending suggestion, promoting it into a real override.")
+    suggestions_approve_p.add_argument("suggestion_id", type=int)
+
+    suggestions_reject_p = suggestions_sub.add_parser("reject", help="Reject a pending suggestion.")
+    suggestions_reject_p.add_argument("suggestion_id", type=int)
+
     return parser
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    STEP_HANDLERS[args.command](args)
+    if args.command == "overrides":
+        run_overrides(args)
+    else:
+        STEP_HANDLERS[args.command](args)
 
 
 if __name__ == "__main__":

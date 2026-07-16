@@ -80,6 +80,35 @@ def test_all_is_idempotent(tmp_path):
 
     db = sqlite_utils.Database(str(db_path))
     assert db["isbn_lookup"].count == 2
+    assert db["authors"].count == 1
+    assert db["works"].count == 1
+    assert db["editions"].count == 1
+
+
+def test_reimport_updates_rows_in_place(tmp_path):
+    input_dir, output_dir = _make_dirs(tmp_path)
+    _write_fixture_dumps(input_dir)
+    db_path = tmp_path / "test.db"
+
+    argv = [
+        "all",
+        "--input-path", str(input_dir),
+        "--output-path", str(output_dir),
+        "--db", str(db_path),
+        "--skip-env",
+        "--skip-download",
+    ]
+    pipeline.main(argv=argv)
+
+    (input_dir / "ol_dump_works_2025-05-01.txt").write_text(
+        _line("/works/OL10W", {"title": "Updated Title", "authors": [{"key": "/authors/OL1A"}]}) + "\n",
+        encoding="utf-8",
+    )
+    pipeline.main(argv=argv)
+
+    db = sqlite_utils.Database(str(db_path))
+    assert db["works"].count == 1
+    assert list(db["works"].rows)[0]["title"] == "Updated Title"
 
 
 def test_process_step_alone_produces_csvs(tmp_path):

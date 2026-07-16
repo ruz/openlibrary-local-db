@@ -184,7 +184,94 @@ The backend is a Flask application managed with Poetry.
     poetry run flask run
     ```
 
-## 9. Running Tests
+## 9. Persistent Local Overrides (optional)
+
+You can record local corrections to a record (fix a typo, add a missing ISBN, etc.) that survive the next `pipeline all`/`pipeline import` run, without touching OpenLibrary's own data. This feature is entirely opt-in: if you never set `OVERRIDES_DB`, nothing about it is active — no extra queries, no new tables, no behavior change.
+
+There is no direct, authenticated write endpoint over HTTP. Every change — including your own, as the operator — goes through a **suggestion queue**: anyone can `POST` a suggested correction (or a suggested reversion to plain upstream data) with no login required, but it only takes effect once you **approve** it with `EDIT_TOKEN`. `EDIT_TOKEN` gates moderation (listing/approving/rejecting), never a direct write — so a leaked or guessed token can, at worst, let someone review your moderation queue, not silently vandalize served data. This is what makes the public, unauthenticated submission endpoint safe to expose. On top of that review gate, submissions are rate-limited per IP and capped in size/volume as defense-in-depth (see below); the CLI's `pipeline overrides set/discard/...` commands remain a separate, direct path for the operator, since they require shell access to the box rather than a network-reachable header.
+
+Overrides are stored in a separate SQLite file (never touched by the pipeline's normal import/rebuild), so they persist automatically across dump updates. Each override also remembers the OpenLibrary value it was based on, so if a later dump changes that value upstream, the override is flagged `stale` for you to review instead of silently reapplying forever.
+
+Only a fixed set of fields can be overridden per record type — the CLI's `overrides set` and the API's `POST .../suggest` reject anything else with an error:
+
+| Entity (`pipeline overrides` entity-type / suggest route) | Overridable fields |
+| --- | --- |
+| `works` (`/v1/work/<ol_id>/suggest`) | `title`, `description`, `authors`, `subjects`, `subject_people`, `subject_places`, `covers`, `series` |
+| `authors` (`/v1/author/<ol_id>/suggest`) | `name`, `birth_date`, `death_date`, `bio`, `alternate_names`, `photos` |
+| `editions` (`/v1/edition/<identifier>/suggest`) | `title`, `subtitle`, `publish_date`, `publish_year`, `number_of_pages`, `physical_format`, `publishers`, `isbn_10`, `isbn_13`, `subjects`, `languages`, `authors`, `author_names`, `works` |
+
+> [!NOTE]
+> `ol_id` itself can never be overridden. Fields that are JSON arrays in the database (`authors`, `subjects`, `isbn_10`, `covers`, etc.) expect a JSON-encoded value when set through the API; the CLI's `--field KEY=VALUE` treats every value as a plain string, so it's best suited to scalar fields like `title`, `name`, or `publish_date`.
+
+### Managing overrides via the CLI
+Set `OVERRIDES_DB` in `.env` (loaded automatically) or pass `--overrides-db` to every command below:
+```bash
+# Correct a field on an imported record
+poetry run pipeline overrides set works OL27448W --field title="Corrected Title" --note "typo fix"
+
+# List what's stored
+poetry run pipeline overrides list
+
+# After re-running the pipeline against a newer dump, check for upstream drift
+poetry run pipeline overrides sync
+
+# Reconcile a stale override: keep your edit, defer to OpenLibrary's new value, or drop it
+poetry run pipeline overrides resolve works OL27448W --keep-mine
+poetry run pipeline overrides resolve works OL27448W --accept-upstream
+poetry run pipeline overrides resolve works OL27448W --discard
+
+# Export active overrides for manual submission on openlibrary.org
+poetry run pipeline overrides export --output my_corrections.json
+poetry run pipeline overrides mark-submitted works OL27448W
+
+# Wipe every stored override (explicit, never automatic)
+poetry run pipeline overrides clear --yes
+```
+
+`pipeline overrides sync` also runs automatically at the end of `pipeline all` — it's a no-op if `OVERRIDES_DB` isn't set.
+
+Submitting a correction to OpenLibrary itself is a manual step: `export` produces a JSON file (OL key + patched fields) for you to review and apply yourself on openlibrary.org, since that requires your own OpenLibrary account/login and there's no automated submission.
+
+### Suggesting an edit via the API (public, no login required)
+Set `ENABLE_SUGGESTIONS=true` in `.env` to turn this on (unset by default — the routes below 404 until you do). Anyone can propose a field correction or a full reversion to upstream data:
+```bash
+# Propose a field correction
+curl -X POST http://localhost:5000/v1/work/OL27448W/suggest \
+  -H "Content-Type: application/json" \
+  -d '{"action": "patch", "patch": {"title": "Corrected Title"}, "note": "typo fix"}'
+
+# Propose reverting a record to plain OpenLibrary data (undoing whatever override currently applies)
+curl -X POST http://localhost:5000/v1/work/OL27448W/suggest \
+  -H "Content-Type: application/json" \
+  -d '{"action": "delete", "note": "this correction is no longer accurate"}'
+```
+The same `POST .../suggest` route exists for `/v1/author/<ol_id>` and `/v1/edition/<identifier>` (identifier may be an OL id or ISBN). A successful submission returns `201` with `{"id": ..., "status": "pending"}` — it is **not** applied yet and does not affect what `GET` returns.
+
+Submissions are throttled by `SUGGESTION_RATE_LIMIT` (default `5 per hour` per IP, via [Flask-Limiter](https://flask-limiter.readthedocs.io/)) and capped in size (oversized patches/notes are rejected) and volume (at most a handful of pending suggestions per record at once) — both `400`/`429` before anything is stored.
+
+> [!WARNING]
+> The default rate-limit storage is in-process memory (`RATELIMIT_STORAGE_URI=memory://`). The Docker image runs gunicorn with multiple workers, each with its *own* counter, so the effective global limit is looser than configured (up to ~worker-count times). For a public-facing deployment where this matters, point `RATELIMIT_STORAGE_URI` at a shared backend (e.g. Redis) that Flask-Limiter supports.
+
+### Moderating suggestions (requires `EDIT_TOKEN`)
+```bash
+# List pending suggestions
+curl http://localhost:5000/v1/suggestions?status=pending -H "X-Edit-Token: your-token"
+# or: poetry run pipeline overrides suggestions list --status pending
+
+# Approve one -- promotes it into a real override (or discards one, for a "delete" suggestion)
+curl -X POST http://localhost:5000/v1/suggestions/42/approve -H "X-Edit-Token: your-token"
+# or: poetry run pipeline overrides suggestions approve 42
+
+# Reject one -- it's kept (for audit) but never affects served data
+curl -X POST http://localhost:5000/v1/suggestions/42/reject -H "X-Edit-Token: your-token"
+# or: poetry run pipeline overrides suggestions reject 42
+```
+`GET` requests to `/v1/work`, `/v1/author`, `/v1/edition` transparently merge any *approved* override into the response (adding an `_override_status` field when one applies) — pending or rejected suggestions never do.
+
+> [!NOTE]
+> Search (`/v1/search`) still matches against the original, un-overridden text — an edited title won't be *findable* by its new wording until a future dump re-indexes it. Overridden fields are still merged into individual result rows, though.
+
+## 10. Running Tests
 The `api/` Flask app, `process_data.py`, and `pipeline.py` have a pytest suite under `tests/`. It builds its own small SQLite fixture database, so it doesn't require a real OpenLibrary dump or `test.db` to be present.
 
 ```bash
@@ -192,7 +279,7 @@ poetry install
 poetry run pytest tests/ -v
 ```
 
-## 10. Running the Web Interface
+## 11. Running the Web Interface
 The frontend is a React application located in the `web` directory.
 
 1.  Navigate to the `web` directory.
