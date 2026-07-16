@@ -8,7 +8,7 @@
 This project converts the [OpenLibrary](https://openlibrary.org/) data dumps (editions, works, authors) into a single indexed, full-text-searchable SQLite database, and exposes it through a Flask API for ISBN/OL-ID lookups and search.
 
 It consists of:
-- **A pipeline** (`pipeline.py` / `process_data.py`) that processes raw OpenLibrary dumps into a compact SQLite database with an ISBN lookup table, indexes, and FTS enabled.
+- **A pipeline** (`pipeline.py` / `download_data.py` / `process_data.py`) that downloads and processes raw OpenLibrary dumps into a compact SQLite database with an ISBN lookup table, indexes, and FTS enabled.
 - **An API** (`api/`, Flask) that serves lookups by ISBN or OpenLibrary ID, and paginated full-text search, with HTTP caching (ETag/Last-Modified/Cache-Control).
 
 The official hosted instance of this projects is available at [metadata.booklogr.app](https://metadata.booklogr.app).
@@ -20,19 +20,9 @@ This project uses [Poetry](https://python-poetry.org/) to manage dependencies an
 poetry install
 ```
 
-## 1. Prepare the Data
-Download the latest `editions`, `works`, and `authors` dumps from the [OpenLibrary Developer Portal](https://openlibrary.org/developers/dumps). Place the raw files into the following directory:
-
-`data/unprocessed/`
-
-> [!TIP]
->For faster downloads you can use the torrents available at [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate). Ensure you select the latest ol_dump file (e.g., ol_dump_2026-04-30), not the ol_cdump version.
-
-This step is required whether you build the database using the automated pipeline below or the manual steps.
-
 ## Quick Start: Automated Pipeline
 
-`pipeline.py` automates building the database (processing dumps, importing to SQLite, building the ISBN lookup table, enabling FTS, and optimizing — steps 2-7 below) in one command, and creates/updates your `.env` file so the API is ready to run immediately afterward.
+`pipeline.py` automates the entire process end-to-end (downloading dumps, processing, importing to SQLite, building the ISBN lookup table, enabling FTS, and optimizing — steps 1-7 below) in one command, and creates/updates your `.env` file so the API is ready to run immediately afterward. You don't need to download anything yourself first — `poetry run pipeline all` downloads the dumps automatically, and skips the download step entirely if matching dump files are already present in `data/unprocessed/`.
 
 ```bash
 poetry run pipeline all
@@ -41,11 +31,14 @@ poetry run pipeline all
 Common options:
 - `--limit N` — process only N rows per dump file (for a quick smoke test; see "Testing with a smaller sample" below)
 - `--input-path`, `--output-path`, `--db` — override the default `./data/unprocessed/`, `./data/processed/`, `test.db` locations
-- `--date YYYY-MM-DD` — pin the dump date instead of auto-detecting it from filenames in `--input-path`
+- `--date YYYY-MM-DD` — pin the dump date instead of auto-detecting it (from archive.org for downloads, or from filenames in `--input-path` for processing)
+- `--method {auto,torrent,http}` — transport for the download step (default: `auto`, torrent preferred with HTTP fallback)
+- `--skip-download` — don't download dump files; use files already present in `--input-path`
 - `--skip-env` — don't create/update `.env`
 
 Each stage can also be run independently, useful for re-running just one step:
 ```bash
+poetry run pipeline download   # fetch dumps -> data/unprocessed/
 poetry run pipeline process    # dumps -> CSVs
 poetry run pipeline import     # CSVs -> SQLite tables
 poetry run pipeline index      # isbn_lookup table + indexes
@@ -56,7 +49,19 @@ poetry run pipeline optimize   # optimize the database
 The manual, step-by-step instructions below describe exactly what the automated pipeline does under the hood, and remain fully supported if you prefer to run them by hand or need finer control.
 
 <details>
-<summary><strong>Manual setup (steps 2-7)</strong></summary>
+<summary><strong>Manual setup (steps 1-7)</strong></summary>
+
+## 1. Prepare the Data
+Download the latest `editions`, `works`, and `authors` dumps automatically:
+
+```bash
+poetry run pipeline download
+```
+
+By default this prefers BitTorrent (faster, and lighter load on OpenLibrary's servers) via the pure-Python [`libtorrent`](https://pypi.org/project/libtorrent/) package — no separate torrent client or binary to install — and automatically falls back to direct HTTP download if BitTorrent isn't available (e.g. no wheel for your platform, network blocks torrent traffic). Force a specific transport with `--method torrent` or `--method http`. Files are placed in `data/unprocessed/`.
+
+> [!TIP]
+> You can still download the dumps manually from the [OpenLibrary Developer Portal](https://openlibrary.org/developers/dumps) or [archive.org/details/ol_exports](https://archive.org/details/ol_exports?sort=-publicdate) and place them in `data/unprocessed/` yourself — this remains fully supported.
 
 ## 2. Process the Dumps
 Run the processing script to clean the data and extract the necessary fields. This script scans the `unprocessed` folder and saves the formatted CSV files into the `processed` folder.

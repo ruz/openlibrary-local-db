@@ -5,6 +5,7 @@ import shutil
 
 import sqlite_utils
 
+import download_data
 import process_data
 
 DEFAULT_INPUT_PATH = "./data/unprocessed/"
@@ -34,6 +35,16 @@ def resolve_date(args):
 
 def resolve_csv_date(args):
     return args.date or process_data.detect_dump_date(args.output_path, extension="csv")
+
+
+def run_download(args):
+    if args.skip_download:
+        print("Skipping download step (--skip-download).")
+        return None
+    date_str = download_data.download_dumps(args.input_path, method=args.method, date=args.date)
+    if date_str is None:
+        print("Download step could not determine a dump date; nothing downloaded.")
+    return date_str
 
 
 def run_process(args, date_str=None):
@@ -132,7 +143,17 @@ def update_env_file(db_path, date_str, env_path=".env", example_path=".env.examp
 
 
 def run_all(args):
-    date_str = resolve_date(args)
+    if args.skip_download:
+        print("Skipping download step (--skip-download).")
+        date_str = resolve_date(args)
+    else:
+        existing_date = process_data.detect_dump_date(args.input_path)
+        if existing_date and (args.date is None or args.date == existing_date):
+            print(f"Dump files already present in {args.input_path} (date {existing_date}); skipping download.")
+            date_str = existing_date
+        else:
+            date_str = run_download(args)
+
     if date_str is None:
         print("No dump files found in --input-path; nothing to do.")
         return
@@ -150,6 +171,7 @@ def run_all(args):
 
 
 STEP_HANDLERS = {
+    "download": run_download,
     "process": run_process,
     "import": run_import,
     "index": run_index,
@@ -173,16 +195,26 @@ def build_parser():
                          help="Stop after processing this many rows per dump file (only used by process/all)")
     common.add_argument("--skip-env", action="store_true",
                          help="Don't create/update the .env file (only used by all)")
+    common.add_argument("--method", choices=["auto", "torrent", "http"], default="auto",
+                         help="Transport for the download step: 'auto' tries BitTorrent first and "
+                              "falls back to HTTP, 'torrent' forces BitTorrent, 'http' forces direct "
+                              "HTTP download (default: auto; only used by download/all)")
+    common.add_argument("--skip-download", action="store_true",
+                         help="Don't download dump files when running 'all'; use files already "
+                              "present in --input-path (only used by all)")
 
     parser = argparse.ArgumentParser(description="Automate the OpenLibrary DB build pipeline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    subparsers.add_parser("download", parents=[common],
+                           help="Download the latest authors/works/editions dumps into --input-path.")
     subparsers.add_parser("process", parents=[common], help="Process raw dumps into CSV files.")
     subparsers.add_parser("import", parents=[common], help="Import processed CSVs into the SQLite database.")
     subparsers.add_parser("index", parents=[common], help="Build the isbn_lookup table and ol_id indexes.")
     subparsers.add_parser("fts", parents=[common], help="Enable full-text search on editions.")
     subparsers.add_parser("optimize", parents=[common], help="Optimize the SQLite database.")
-    subparsers.add_parser("all", parents=[common], help="Run the full pipeline end-to-end.")
+    subparsers.add_parser("all", parents=[common],
+                           help="Run the full pipeline end-to-end (download, process, import, index, fts, optimize).")
 
     return parser
 

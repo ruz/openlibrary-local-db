@@ -47,6 +47,7 @@ def test_all_builds_full_database(tmp_path):
         "--output-path", str(output_dir),
         "--db", str(db_path),
         "--skip-env",
+        "--skip-download",
     ])
 
     db = sqlite_utils.Database(str(db_path))
@@ -72,6 +73,7 @@ def test_all_is_idempotent(tmp_path):
         "--output-path", str(output_dir),
         "--db", str(db_path),
         "--skip-env",
+        "--skip-download",
     ]
     pipeline.main(argv=argv)
     pipeline.main(argv=argv)  # should not raise

@@ -15,6 +15,9 @@ python-dotenv = "^1.0.1"
 gunicorn = "^22.0.0"
 flasgger = "^0.9.7.1"
 sqlite-utils = "^3.36"
+requests = "^2.34.2"
+libtorrent = "^2.0.13"
+tqdm = "^4.68.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.1"
