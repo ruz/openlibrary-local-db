@@ -103,7 +103,7 @@ def test_main_skips_malformed_json_row(tmp_path, monkeypatch, capsys):
     malformed_line = "\t".join(["type", "/works/OL11W", "rev", "lastmod", "{not json"])
     _write_dump(input_dir, WORKS_FILE, [valid_line, malformed_line])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
     out = capsys.readouterr().out
 
     rows = _read_csv(output_dir, "ol_dump_works_2026-06-30.csv")
@@ -121,7 +121,7 @@ def test_main_skips_short_rows(tmp_path, monkeypatch, capsys):
     short_line = "type\t/works/OL11W\trev"
     _write_dump(input_dir, WORKS_FILE, [valid_line, short_line])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
     out = capsys.readouterr().out
 
     rows = _read_csv(output_dir, "ol_dump_works_2026-06-30.csv")
@@ -139,7 +139,7 @@ def test_main_skips_missing_input_file(tmp_path, monkeypatch, capsys):
     _write_dump(input_dir, WORKS_FILE, [_line("/works/OL10W", {"title": "Test Work"})])
     # editions dump intentionally omitted
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
     out = capsys.readouterr().out
 
     assert f"Skipping {EDITIONS_FILE}: File not found." in out
@@ -159,7 +159,7 @@ def test_main_limit_caps_rows_per_task(tmp_path, monkeypatch):
     _write_dump(input_dir, AUTHORS_FILE, author_lines)
     _write_dump(input_dir, EDITIONS_FILE, edition_lines)
 
-    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--limit", "2"])
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--limit", "2", "--date", "2026-06-30"])
 
     assert len(_read_csv(output_dir, "ol_dump_authors_2026-06-30.csv")) == 2
     assert len(_read_csv(output_dir, "ol_dump_editions_2026-06-30.csv")) == 2
@@ -180,7 +180,7 @@ def test_main_bio_and_description_dict_vs_string_variants(tmp_path, monkeypatch)
         _line("/works/OL11W", {"title": "String Desc", "description": "plain desc"}),
     ])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     authors_rows = _read_csv(output_dir, "ol_dump_authors_2026-06-30.csv")
     assert authors_rows[0]["bio"] == "dict text"
@@ -202,7 +202,7 @@ def test_main_works_author_ref_shape_variants(tmp_path, monkeypatch):
         _line("/works/OL11W", {"title": "Flat", "authors": [{"key": "/authors/OL2A"}]}),
     ])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     rows = _read_csv(output_dir, "ol_dump_works_2026-06-30.csv")
     assert json.loads(rows[0]["authors"]) == ["OL1A"]
@@ -220,7 +220,7 @@ def test_main_series_extraction(tmp_path, monkeypatch):
         "series": [{"series": {"key": "/series/OL1S"}}],
     })])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     rows = _read_csv(output_dir, "ol_dump_works_2026-06-30.csv")
     assert json.loads(rows[0]["series"]) == ["OL1S"]
@@ -238,7 +238,7 @@ def test_main_editions_languages_and_works_refs(tmp_path, monkeypatch):
         "works": [{"key": "/works/OL10W"}],
     })])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     rows = _read_csv(output_dir, "ol_dump_editions_2026-06-30.csv")
     assert json.loads(rows[0]["languages"]) == ["eng"]
@@ -257,7 +257,7 @@ def test_main_isbn_normalization_applied(tmp_path, monkeypatch):
         "isbn_13": ["978-0-261-10221-4"],
     })])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     rows = _read_csv(output_dir, "ol_dump_editions_2026-06-30.csv")
     assert json.loads(rows[0]["isbn_10"]) == ["0261102214"]
@@ -277,7 +277,7 @@ def test_main_photos_and_covers_filtered(tmp_path, monkeypatch):
         "title": "Cover Edition", "covers": [-1, 2],
     })])
 
-    _run_main(input_dir, output_dir, monkeypatch)
+    _run_main(input_dir, output_dir, monkeypatch, extra_args=["--date", "2026-06-30"])
 
     authors_rows = _read_csv(output_dir, "ol_dump_authors_2026-06-30.csv")
     assert json.loads(authors_rows[0]["photos"]) == [12345]

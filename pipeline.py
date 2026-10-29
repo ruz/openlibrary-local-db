@@ -2,6 +2,9 @@ import argparse
 import csv
 import os
 import shutil
+import sqlite3
+import sys
+import time
 
 from dotenv import load_dotenv
 import sqlite_utils
@@ -16,7 +19,8 @@ DEFAULT_INPUT_PATH = "./data/unprocessed/"
 DEFAULT_OUTPUT_PATH = "./data/processed/"
 DEFAULT_DB = "test.db"
 
-IMPORT_BATCH_SIZE = 5000
+ROWS_PER_STATEMENT = 1000
+STATEMENTS_PER_TRANSACTION = 10
 
 TABLE_TYPES = ("authors", "works", "editions")
 
@@ -65,13 +69,171 @@ def run_process(args, date_str=None):
     return date_str
 
 
-def _dedupe_by_ol_id(db, table):
-    """Collapse pre-existing duplicate ol_id rows (from the old insert_all-based
-    import) so upsert_all's implicit unique index on ol_id can be created."""
-    db.execute(
-        f"DELETE FROM {table} WHERE rowid NOT IN "
-        f"(SELECT MIN(rowid) FROM {table} GROUP BY ol_id)"
+def _quote_identifier(identifier):
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _has_unique_ol_id(connection, table):
+    table_sql = _quote_identifier(table)
+    info = connection.execute(f"PRAGMA table_info({table_sql})").fetchall()
+    primary_key = [row[1] for row in sorted(info, key=lambda row: row[5]) if row[5]]
+    if primary_key == ["ol_id"]:
+        return True
+
+    for index in connection.execute(f"PRAGMA index_list({table_sql})"):
+        if not index[2] or (len(index) > 4 and index[4]):
+            continue
+        index_sql = _quote_identifier(index[1])
+        columns = [row[2] for row in connection.execute(f"PRAGMA index_info({index_sql})")]
+        if columns == ["ol_id"]:
+            return True
+    return False
+
+
+def _ensure_import_table(connection, table, columns):
+    table_sql = _quote_identifier(table)
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    if not exists:
+        definitions = ", ".join(
+            f"{_quote_identifier(column)} TEXT" + (" PRIMARY KEY" if column == "ol_id" else "")
+            for column in columns
+        )
+        connection.execute(f"CREATE TABLE {table_sql} ({definitions})")
+        return
+
+    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table_sql})")}
+    for column in columns:
+        if column not in existing:
+            connection.execute(
+                f"ALTER TABLE {table_sql} ADD COLUMN {_quote_identifier(column)} TEXT"
+            )
+    if _has_unique_ol_id(connection, table):
+        return
+
+    connection.execute(
+        f"DELETE FROM {table_sql} WHERE rowid NOT IN "
+        f"(SELECT MIN(rowid) FROM {table_sql} GROUP BY {_quote_identifier('ol_id')})"
     )
+    index_name = f"idx_{table}_ol_id_unique"
+    connection.execute(
+        f"CREATE UNIQUE INDEX {_quote_identifier(index_name)} "
+        f"ON {table_sql} ({_quote_identifier('ol_id')})"
+    )
+
+
+def _upsert_sql(table, columns, row_count):
+    table_sql = _quote_identifier(table)
+    columns_sql = ", ".join(_quote_identifier(column) for column in columns)
+    row_placeholders = "(" + ", ".join("?" for _ in columns) + ")"
+    values_sql = ", ".join(row_placeholders for _ in range(row_count))
+    updates = [column for column in columns if column != "ol_id"]
+    if updates:
+        update_sql = ", ".join(
+            f"{_quote_identifier(column)} = excluded.{_quote_identifier(column)}"
+            for column in updates
+        )
+        conflict = f"DO UPDATE SET {update_sql}"
+    else:
+        conflict = "DO NOTHING"
+    return (
+        f"INSERT INTO {table_sql} ({columns_sql}) VALUES {values_sql} "
+        f"ON CONFLICT ({_quote_identifier('ol_id')}) {conflict}"
+    )
+
+
+def _import_csv(connection, table, csv_path):
+    started = time.perf_counter()
+    statements = 0
+    pending_rows = 0
+    imported_rows = 0
+    previous_field_limit = csv.field_size_limit()
+    try:
+        try:
+            csv.field_size_limit(sys.maxsize)
+        except OverflowError:
+            csv.field_size_limit(sys.maxsize // 2)
+        with open(csv_path, newline="", encoding="utf-8") as stream:
+            reader = csv.reader(stream, delimiter=";", quotechar="|")
+            try:
+                columns = next(reader)
+            except StopIteration:
+                raise ValueError(f"{csv_path}: missing CSV header") from None
+            if not columns or any(not column for column in columns):
+                raise ValueError(f"{csv_path}: CSV header contains an empty column name")
+            if len(set(columns)) != len(columns):
+                raise ValueError(f"{csv_path}: CSV header contains duplicate column names")
+            if "ol_id" not in columns:
+                raise ValueError(f"{csv_path}: CSV header is missing required ol_id column")
+            ol_id_index = columns.index("ol_id")
+
+            _ensure_import_table(connection, table, columns)
+            connection.commit()
+            max_rows = min(
+                ROWS_PER_STATEMENT,
+                connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) // len(columns),
+            )
+            if max_rows < 1:
+                raise ValueError(
+                    f"{csv_path}: SQLite variable limit is too low for {len(columns)} columns"
+                )
+            full_sql = _upsert_sql(table, columns, max_rows)
+            batch = []
+
+            def flush(rows):
+                nonlocal statements, pending_rows, imported_rows
+                flat_values = tuple(value for row in rows for value in row)
+                sql = full_sql if len(rows) == max_rows else _upsert_sql(table, columns, len(rows))
+                connection.execute(sql, flat_values)
+                statements += 1
+                pending_rows += len(rows)
+                if statements % STATEMENTS_PER_TRANSACTION == 0:
+                    connection.commit()
+                    imported_rows += pending_rows
+                    pending_rows = 0
+                    elapsed = time.perf_counter() - started
+                    rate = imported_rows / elapsed if elapsed else 0
+                    print(
+                        f"{table}: committed {imported_rows:,} rows in {elapsed:.1f}s "
+                        f"({rate:,.0f} rows/s).",
+                        flush=True,
+                    )
+
+            for row in reader:
+                record_number = reader.line_num
+                if len(row) != len(columns):
+                    raise ValueError(
+                        f"{csv_path}: record ending at line {record_number} has "
+                        f"{len(row)} fields; expected {len(columns)}"
+                    )
+                if not row[ol_id_index].strip():
+                    raise ValueError(
+                        f"{csv_path}: record ending at line {record_number} has an empty ol_id"
+                    )
+                batch.append(tuple(row))
+                if len(batch) == max_rows:
+                    flush(batch)
+                    batch = []
+            if batch:
+                flush(batch)
+            if pending_rows:
+                connection.commit()
+                imported_rows += pending_rows
+                pending_rows = 0
+            elapsed = time.perf_counter() - started
+            rate = imported_rows / elapsed if elapsed else 0
+            print(
+                f"{table}: imported {imported_rows:,} rows in {elapsed:.1f}s "
+                f"({rate:,.0f} rows/s).",
+                flush=True,
+            )
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        csv.field_size_limit(previous_field_limit)
+    return imported_rows
 
 
 def run_import(args, date_str=None):
@@ -80,18 +242,16 @@ def run_import(args, date_str=None):
         print("No processed CSV files found; skipping import step.")
         return None
 
-    db = sqlite_utils.Database(args.db)
-    for table in TABLE_TYPES:
-        csv_path = os.path.join(args.output_path, f"ol_dump_{table}_{date_str}.csv")
-        if not os.path.exists(csv_path):
-            print(f"Skipping {table} import: {csv_path} not found.")
-            continue
-        if table in db.table_names() and "ol_id" not in db[table].pks:
-            _dedupe_by_ol_id(db, table)
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter=";", quotechar="|")
-            db[table].upsert_all(reader, pk="ol_id", batch_size=IMPORT_BATCH_SIZE, alter=True)
-        print(f"Imported {table} into {args.db}.")
+    connection = sqlite3.connect(args.db, cached_statements=128)
+    try:
+        for table in TABLE_TYPES:
+            csv_path = os.path.join(args.output_path, f"ol_dump_{table}_{date_str}.csv")
+            if not os.path.exists(csv_path):
+                print(f"Skipping {table} import: {csv_path} not found.")
+                continue
+            _import_csv(connection, table, csv_path)
+    finally:
+        connection.close()
     return date_str
 
 

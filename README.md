@@ -87,7 +87,9 @@ The full dumps take a long time to process and import, which makes iterating on 
 > Small samples may not contain rarer data-quality edge cases (e.g. missing author names, `-1` "no image" placeholder IDs, or malformed rows). Use at least a few thousand rows if you want to exercise those cases.
 
 ## 3. Import to SQLite
-Use [sqlite-utils](https://sqlite-utils.datasette.io/en/stable/) to import the processed CSV files into a new database named `test.db`. Note that the `editions` table is significantly larger than the others and will take the longest to import.
+For the regular pipeline, import the processed CSV files with `poetry run pipeline import`. The importer uses SQLite UPSERTs in bounded multi-row statements and commits periodically, so an interrupted run can be safely replayed against the same database. Note that the `editions` table is significantly larger than the others and will take the longest to import.
+
+The following [sqlite-utils](https://sqlite-utils.datasette.io/en/stable/) commands are an alternative for manually creating a small database named `test.db`:
 
 ```bash
 # Import Authors

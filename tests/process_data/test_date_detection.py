@@ -35,22 +35,23 @@ def test_detect_dump_date_partial_dump_types(tmp_path):
     input_dir = tmp_path / "in"
     input_dir.mkdir()
     (input_dir / "ol_dump_works_2025-03-01.txt").write_text("", encoding="utf-8")
-    assert process_data.detect_dump_date(str(input_dir)) == "2025-03-01"
+    assert process_data.detect_dump_date(str(input_dir)) is None
 
 
 def test_detect_dump_date_most_recent_wins(tmp_path):
     input_dir = tmp_path / "in"
     input_dir.mkdir()
-    (input_dir / "ol_dump_authors_2024-01-01.txt").write_text("", encoding="utf-8")
-    (input_dir / "ol_dump_works_2025-06-15.txt").write_text("", encoding="utf-8")
-    (input_dir / "ol_dump_editions_2025-06-15.txt").write_text("", encoding="utf-8")
+    for dump_type in ("authors", "works", "editions"):
+        (input_dir / f"ol_dump_{dump_type}_2024-01-01.txt").write_text("", encoding="utf-8")
+        (input_dir / f"ol_dump_{dump_type}_2025-06-15.txt").write_text("", encoding="utf-8")
     assert process_data.detect_dump_date(str(input_dir)) == "2025-06-15"
 
 
 def test_detect_dump_date_extension_filter(tmp_path):
     output_dir = tmp_path / "out"
     output_dir.mkdir()
-    (output_dir / "ol_dump_works_2025-06-15.csv").write_text("", encoding="utf-8")
+    for dump_type in ("authors", "works", "editions"):
+        (output_dir / f"ol_dump_{dump_type}_2025-06-15.csv").write_text("", encoding="utf-8")
     (output_dir / "ol_dump_authors_2025-06-15.txt").write_text("", encoding="utf-8")
     assert process_data.detect_dump_date(str(output_dir), extension="csv") == "2025-06-15"
 
